@@ -13,15 +13,15 @@ A change of direction is recorded as a decision first and absorbed here afterwar
 
 ## North star
 
-> Let any application offer its named operations as commands from a declaration alone, so that whoever runs one - a person or an agent - learns from its exit status and output exactly how the invocation ended, and how to repeat it when that cannot be known.
+> Let any application offer its named operations as commands by declaring them, so that whoever runs one - a person or an agent - learns from its exit status and output exactly how the invocation ended, or that nothing was invoked, and how to repeat it when how it ended cannot be known.
 
 Four terms in that sentence carry weight, so this document defines them rather than leaving them to the reader.
 
 **Named operations** means operations a caller reaches by name and that end in one of four ways: answered, refused with a reason, not delivered, or unknown.
 
-**A declaration alone** means each command, its flags, the environment variables that may stand in for them, their defaults and their valid values are written as data, and the application writes no parsing of its own.
+**By declaring them** means each command, its flags, the environment variables that may stand in for them, their defaults and their valid values are written as data; the application writes no parsing of its own, and its code is only what builds each operation's input and words its answer.
 
-**Exactly how the invocation ended** means each of the four endings, and an error in the command itself, has its own exit status and its own output, so a script or an agent can act on it without reading prose.
+**Exactly how the invocation ended, or that nothing was invoked** means each of the four endings has its own exit status and its own output, and so does a command refused before anything was invoked - an error in the command, or an interruption before the invocation was sent - so a script or an agent can act on it without reading prose.
 
 **How to repeat it** means an invocation whose ending is unknown prints the command that repeats it under the same invocation identity, so whatever owns the effect can recognise the repeat.
 
@@ -42,7 +42,7 @@ operation-command writes that layer once, so a command tells the truth about its
 ## What it is
 
 A library that a command-line program embeds.\
-It reads a declaration of commands, takes the program's arguments and environment, invokes the named operation through a caller of the call layer, prints the ending, and exits with that ending's status.
+It reads a declaration of commands, takes the program's arguments and environment, invokes the named operation through a caller of the call layer with the bound the command's settings give, prints the ending, and exits with that ending's status.
 
 The application supplies its declaration, the caller to invoke through, and how its answers are worded; operation-command supplies everything between.
 
@@ -51,16 +51,16 @@ The application supplies its declaration, the caller to invoke through, and how 
 ## What it is not
 
 **Not the call layer.**\
-It does not pair answers with requests, keep a call's bound, or decide how a call ended; it reports the ending the call layer gives it, unchanged.
+It does not pair answers with requests, keep a call's bound, or decide how a call ended; it reports the ending the call layer gives it, unchanged, and adds only what is its own: the exit status, the refusal of a command that is not valid, and the command that repeats an unknown ending.
 
 **Not a retrier.**\
-It never repeats an invocation on its own; it prints how to repeat one, and the person or agent decides.
+It never repeats an invocation on its own; for an invocation whose ending is unknown, it prints how to repeat it, and the person or agent decides.
 
 **Not a shell or a terminal interface.**\
 It runs one command and exits; it keeps no session, draws no screen, and offers no prompts.
 
 **Not the application's voice.**\
-What a command is called, what it says about itself, and how an answer reads are the application's, supplied with the declaration.
+What a command is called, what it says about itself, and how an answer reads are the application's, supplied with the declaration; the statuses and records that say how a command ended are operation-command's, the same for every application.
 
 **Not an authority.**\
 It passes the identity it is configured with to the caller, and decides nothing about what that identity may do.

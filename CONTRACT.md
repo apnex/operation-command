@@ -79,8 +79,9 @@ A command prints its ending on standard output and nothing else there; standard 
 | unknown | 4 | `reason`; `agpCode` or `null`; `deliveryReport`, `delivered`, `unknown` or `null`; and `repeat` for a command that changes something (`OC5`) |
 | usage error | 1 | none; `OC2` |
 
+A command interrupted by `SIGINT` or `SIGTERM` before its invocation was written exits with status 1, printing `interrupted: nothing was invoked` on standard error; interrupted after, it ends unknown with reason `interrupted`, exit status 4 and its `repeat`, since the call may have reached the operation.\
 With `--json` a command prints one JSON object holding those fields; without it, it prints the same facts one per line, as a name, a colon and a value, the answer worded by the application's function.\
-Tested by: `E19`, in `test/contract/ending-exit-status.test.js`, which checks each ending's status, its JSON object whole, and its plain form, with endings given by a fixture caller and by operation-call over AGP's production in-process carrier.
+Tested by: `E19`, in `test/contract/ending-exit-status.test.js`, which checks each ending's status, its JSON object whole, and its plain form, with endings given by a fixture caller and by operation-call over AGP's production in-process carrier, and a command interrupted before and after writing its invocation.
 
 **OC5 - Repeating an unknown ending.**\
 For a command that changes something, an unknown ending carries `repeat`: a JSON array of strings - the command's arguments after the program's name, with any `--invocation` and its value removed, and `--invocation` and the invocation identity added at the end; a command that changes nothing carries no `repeat`.\
