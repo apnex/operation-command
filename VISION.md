@@ -21,9 +21,9 @@ Four terms in that sentence carry weight, so this document defines them rather t
 
 **By declaring them** means each command, its flags, the environment variables that may stand in for them, their defaults and their valid values are written as data; the application writes no parsing of its own, and its code is only what builds each operation's input and words its answer.
 
-**Exactly how the invocation ended, or that nothing was invoked** means each of the four endings has its own exit status and its own output, and so does a command refused before anything was invoked - an error in the command, or an interruption before the invocation was sent - so a script or an agent can act on it without reading prose.
+**Exactly how the invocation ended, or that nothing was invoked** means each of the four endings has its own exit status and its own output, and so does a command refused before anything was invoked - an error in the command, or an interruption before the invocation began - so a script or an agent can act on it without reading prose; a command interrupted after its invocation began reports whatever ending the call layer gives.
 
-**How to repeat it** means an invocation whose ending is unknown prints the command that repeats it under the same invocation identity, so whatever owns the effect can recognise the repeat.
+**How to repeat it** means an invocation whose ending is unknown prints the command that repeats it with the settings it used - under the same invocation identity when it changes something, so whatever owns the effect can recognise the repeat, and as a fresh run when it changes nothing.
 
 ---
 
@@ -44,7 +44,7 @@ operation-command writes that layer once, so a command tells the truth about its
 A library that a command-line program embeds.\
 It reads a declaration of commands, takes the program's arguments and environment, invokes the named operation through a caller of the call layer with the bound the command's settings give, prints the ending, and exits with that ending's status.
 
-The application supplies its declaration, the caller to invoke through, how each operation's input is built from a command's flags, and how its answers are worded; operation-command supplies everything between.
+The application supplies its declaration, the client its commands run through, how each command runs its invocation through that client, and how its answers are worded; operation-command supplies everything between.
 
 ---
 
