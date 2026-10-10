@@ -44,6 +44,59 @@ In zorg's Delta 1, all rows but `command-reference` are built, for zorg's six co
 
 ---
 
+## Command design
+
+**Maturity: provisional**, designed under zorg's Delta 1, amendment 2, and zorg's rulings `D8`, `D21`, `D35` and `D37`.\
+Each declaration names the exit criterion of zorg's `docs/DELTAS/DELTA-1.md` that proves it and the test that exercises it.\
+The call layer is operation-call; its endings and invocation identities are those of zorg's `docs/ARCHITECTURE-TARGET.md`, `EM11` and `EM12`, and the caller may be operation-call's own or operation-proxy's client half.
+
+**OC1 - The declaration.**\
+An application declares its program as data: its settings, each with a flag, an optional environment variable, an optional default, a type and its valid values; and its commands, each with a name, the operation it invokes, its own flags, whether it changes anything, and two functions the application supplies - one building the operation's input from the parsed flags, one wording the answer for the plain form.\
+A flag's type is a string matching a stated pattern, a whole number within stated bounds, a duration within stated bounds, a URL of stated schemes, or a switch; a flag may be required, may repeat, and may exclude or require other flags.\
+A duration is a whole number with no sign followed by one of `ms`, `s`, `m`, `h` or `d`, in lower case.\
+The declaration names the settings that give a call's bound and its time to prepare (`command-call-bound`).\
+Tested by: `E19`, in `test/contract/declared-command-dispatch.test.js`, with a fixture application.
+
+**OC2 - Reading a command.**\
+Arguments are the command's name followed by flags written `--flag value`, `--flag=value`, or `--flag` alone for a switch; a setting's value comes from its flag, else its variable, else its default.\
+A usage error is any of: an unknown command or flag; a flag without its value; a flag given twice that may not repeat; a required flag missing; a value of the wrong type or outside its valid values; two flags that exclude each other; and a flag missing that another requires.\
+A usage error prints `usage: ` and what was wrong on standard error, one line, and exits with status 1 before the caller is prepared, so nothing is invoked.\
+Tested by: `E19`, in `test/contract/declared-command-dispatch.test.js`, with a case for each kind of usage error, a flag overriding its variable, a variable overriding its default, a repeated flag kept in order, and no invocation made on any usage error.
+
+**OC3 - Invoking.**\
+A command prepares its caller, when the caller can be prepared, with a deadline of the moment the command started plus its preparation setting, then invokes its operation with its bound setting as the call's bound, under the invocation identity given by `--invocation` - which marks the invocation as a repeat - or a new one.\
+A value of `--invocation` that is not an invocation identity as `EM11` writes it is a usage error.\
+Tested by: `E19`, in `test/contract/command-call-bound.test.js`, with a fixture caller recording the bound, the preparation deadline, the identity and the repeat flag it was given.
+
+**OC4 - Exit statuses and output.**\
+A command prints its ending on standard output and nothing else there; standard error carries only diagnostics and usage errors.
+
+| Ending | Exit status | Fields with `--json`, besides `ending`, `operation` and `invocation` |
+|---|---|---|
+| answered | 0 | `answer`, as the operation gave it |
+| refused | 2 | `refusal`, the refusal record unchanged (zorg's `D21`) |
+| not delivered | 3 | `agpCode` and `proxyCode`, each the ending's or `null`; `earlierAttemptsUncertain`, true for a repeat |
+| unknown | 4 | `reason`; `agpCode` or `null`; `deliveryReport`, `delivered`, `unknown` or `null`; and `repeat` for a command that changes something (`OC5`) |
+| usage error | 1 | none; `OC2` |
+
+With `--json` a command prints one JSON object holding those fields; without it, it prints the same facts one per line, as a name, a colon and a value, the answer worded by the application's function.\
+Tested by: `E19`, in `test/contract/ending-exit-status.test.js`, which checks each ending's status, its JSON object whole, and its plain form, with endings given by a fixture caller and by operation-call over AGP's production in-process carrier.
+
+**OC5 - Repeating an unknown ending.**\
+For a command that changes something, an unknown ending carries `repeat`: a JSON array of strings - the command's arguments after the program's name, with any `--invocation` and its value removed, and `--invocation` and the invocation identity added at the end; a command that changes nothing carries no `repeat`.\
+The plain form prints `repeat` as one command line beginning with the program's name, each argument in single quotes and each single quote within one written `'\''`.\
+Run, that command repeats the same request under the same invocation identity.\
+Tested by: `E19`, in `test/contract/repeat-command-line.test.js`, for an argument holding spaces and quotes, a repeat that itself ends unknown, which gives a `repeat` with one `--invocation`, and the repeat run against a fixture caller, which receives the same input and identity.
+
+**OC6 - The reference, outside Delta 1.**\
+`command-reference` generates the reference of every command from the declaration; it is left out of Delta 1, and its test, `test/contract/command-reference.test.js`, is owed with it.
+
+**OC7 - What zorg composes.**\
+The command-line client of zorg declares its settings and six commands to operation-command, invoking through operation-proxy's client half; zorg's own declaration - its settings, its commands, how each builds its input and words its answer - is zorg's `RT2`.\
+Tested by: `E15`, in zorg's `test/e2e/command-configuration.test.js` and `test/e2e/command-endings.test.js`.
+
+---
+
 ## Reference
 
 Not yet built.\
