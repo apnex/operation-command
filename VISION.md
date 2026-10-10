@@ -44,14 +44,14 @@ operation-command writes that layer once, so a command tells the truth about its
 A library that a command-line program embeds.\
 It reads a declaration of commands, takes the program's arguments and environment, invokes the named operation through a caller of the call layer with the bound the command's settings give, prints the ending, and exits with that ending's status.
 
-The application supplies its declaration, the caller to invoke through, and how its answers are worded; operation-command supplies everything between.
+The application supplies its declaration, the caller to invoke through, how each operation's input is built from a command's flags, and how its answers are worded; operation-command supplies everything between.
 
 ---
 
 ## What it is not
 
 **Not the call layer.**\
-It does not pair answers with requests, keep a call's bound, or decide how a call ended; it reports the ending the call layer gives it, unchanged, and adds only what is its own: the exit status, the refusal of a command that is not valid, and the command that repeats an unknown ending.
+It does not pair answers with requests, keep a call's bound, or decide how a call ended; it reports the ending the call layer gives it, unchanged, and adds only what is its own: the exit status, the refusal of a command that is not valid, the report of a command interrupted before it invoked anything, and the command that repeats an unknown ending.
 
 **Not a retrier.**\
 It never repeats an invocation on its own; for an invocation whose ending is unknown, it prints how to repeat it, and the person or agent decides.
