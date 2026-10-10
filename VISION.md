@@ -19,11 +19,11 @@ Four terms in that sentence carry weight, so this document defines them rather t
 
 **Named operations** means operations a caller reaches by name and that end in one of four ways: answered, refused with a reason, not delivered, or unknown.
 
-**By declaring them** means each command, its flags, the environment variables that may stand in for them, their defaults and their valid values are written as data; the application writes no parsing of its own, and its code is only what builds each operation's input and words its answer.
+**By declaring them** means each command, its flags, the environment variables that may stand in for them, their defaults and their valid values are written as data; the application writes no parsing of its own, and its code is only what builds each operation's input, runs it through the application's own client and words its answer, and the code of any command that invokes nothing.
 
 **Exactly how the invocation ended, or that nothing was invoked** means each of the four endings has its own exit status and its own output, and so does a command refused before anything was invoked - an error in the command, or an interruption before the invocation began - so a script or an agent can act on it without reading prose; a command interrupted after its invocation began reports whatever ending the call layer gives.
 
-**How to repeat it** means an invocation whose ending is unknown prints the command that repeats it with the settings it used - under the same invocation identity when it changes something, so whatever owns the effect can recognise the repeat, and as a fresh run when it changes nothing.
+**How to repeat it** means an invocation whose ending is unknown prints the command that repeats it with the settings it used, save any secret, which whoever runs it supplies again - under the same invocation identity when it changes something, so whatever owns the effect can recognise the repeat, and as a fresh run when it changes nothing.
 
 ---
 
@@ -51,7 +51,7 @@ The application supplies its declaration, the client its commands run through, h
 ## What it is not
 
 **Not the call layer.**\
-It does not pair answers with requests, keep a call's bound, or decide how a call ended; it reports the ending the call layer gives it, unchanged, and adds only what is its own: the exit status, the refusal of a command that is not valid, the report of a command interrupted before it invoked anything, and the command that repeats an unknown ending.
+It does not pair answers with requests, keep a call's bound, or decide how a call ended; it reports the ending the call layer gives it, unchanged, and adds only what is its own: the exit status, the refusal of a command that is not valid, the report of a command interrupted before it invoked anything, the ending not delivered of a command whose client failed to prepare without saying how, and the command that repeats an unknown ending.
 
 **Not a retrier.**\
 It never repeats an invocation on its own; for an invocation whose ending is unknown, it prints how to repeat it, and the person or agent decides.
@@ -81,7 +81,7 @@ The measure is that no unknown ending ever exits as an answer or as not delivere
 
 **Ease.**\
 A new command is a new declaration.\
-The measure is the code an application writes to add a command, beyond declaring it and wording its answer, stated and small.
+The measure is the code an application writes to add a command, beyond declaring it, running it through its client and wording its answer, stated and small.
 
 **Leanness.**\
 It adds little time or code to the call beneath.\
