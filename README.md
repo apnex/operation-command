@@ -3,7 +3,7 @@
 Run one declared invocation from a command line, reporting its ending through the exit status.
 
 **Status: no code yet.**\
-Its vision is drafted and awaits ratification, and its contract is drafted.
+Its vision is ratified (zorg's `D44`), and its contract's design is certified at zorg's Delta 1, amendment 2.
 
 - `VISION.md` - why it exists, and what it will never be.
 - `CONTRACT.md` - what a consumer can depend on, one capability per row.
