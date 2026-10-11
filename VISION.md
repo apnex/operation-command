@@ -19,9 +19,9 @@ Four terms in that sentence carry weight, so this document defines them rather t
 
 **Named operations** means operations a caller reaches by name and that end in one of four ways: answered, refused with a reason, not delivered, or unknown.
 
-**By declaring them** means each command, its flags, the environment variables that may stand in for them, their defaults and their valid values are written as data; the application writes no parsing of its own, and its code is only what builds each operation's input, runs it through the application's own client and words its answer, and the code of any command that invokes nothing.
+**By declaring them** means each command, its flags, the environment variables that may stand in for them, their defaults and their valid values are written as data; the application writes no parsing of its own, and its code is only what builds each operation's input, runs it through the application's own client and words its answer, and the code of any command that invokes nothing; a reference of every command, its flags and their defaults is generated from that data, in the words the application gave it, never written beside it.
 
-**Exactly how the invocation ended, or that nothing was invoked** means each of the four endings has its own exit status and its own output, and so does a command refused before anything was invoked - an error in the command, or an interruption before the invocation began - so a script or an agent can act on it without reading prose; a command interrupted after its invocation began reports whatever ending the call layer gives.
+**Exactly how the invocation ended, or that nothing was invoked** means each of the four endings has its own exit status and its own output, and so does a command refused before anything was invoked - an error in the command, or an interruption before the invocation began, which share one status of their own - so a script or an agent can act on it without reading prose; a command interrupted after its invocation began reports whatever ending the call layer gives, however often it is interrupted.
 
 **How to repeat it** means an invocation whose ending is unknown prints the command that repeats it with the settings it used, save any secret, which whoever runs it supplies again - under the same invocation identity when it changes something, so whatever owns the effect can recognise the repeat, and as a fresh run when it changes nothing.
 
@@ -42,7 +42,7 @@ operation-command writes that layer once, so a command tells the truth about its
 ## What it is
 
 A library that a command-line program embeds.\
-It reads a declaration of commands, takes the program's arguments and environment, invokes the named operation through a caller of the call layer with the bound the command's settings give, prints the ending, and exits with that ending's status.
+It reads a declaration of commands, takes the program's arguments and environment, invokes the named operation through a caller of the call layer, handing it the bound the command's settings give for the call layer to keep, prints the ending, and exits with that ending's status.
 
 The application supplies its declaration, the client its commands run through, how each command runs its invocation through that client, and how its answers are worded; operation-command supplies everything between.
 
@@ -51,7 +51,7 @@ The application supplies its declaration, the client its commands run through, h
 ## What it is not
 
 **Not the call layer.**\
-It does not pair answers with requests, keep a call's bound, or decide how a call ended; it reports the ending the call layer gives it, unchanged, and adds only what is its own: the exit status, the refusal of a command that is not valid, the report of a command interrupted before it invoked anything, the ending not delivered of a command whose client failed to prepare without saying how, and the command that repeats an unknown ending.
+It does not pair answers with requests, keep a call's bound, or decide how a call ended; it reports the ending the call layer gives it, unchanged, and adds only what is its own: the exit status, the refusal of a command that is not valid, the report of a command interrupted before it invoked anything, the ending not delivered of a command whose client could not get ready - a fact of its own, since no call was ever made - when the client does not say how, and the command that repeats an unknown ending.
 
 **Not a retrier.**\
 It never repeats an invocation on its own; for an invocation whose ending is unknown, it prints how to repeat it, and the person or agent decides.
@@ -76,8 +76,8 @@ Four dimensions.\
 They are not weighted, and they do not collapse.
 
 **Honest exits.**\
-Every command exits with the status of the ending that is true.\
-The measure is that no unknown ending ever exits as an answer or as not delivered, and every unknown ending prints how to repeat it.
+Every command that invokes an operation exits with the status of the ending that is true, which is unknown whenever the truth cannot be known.\
+The measure is that no unknown ending ever exits as any other ending, and every unknown ending prints how to repeat it.
 
 **Ease.**\
 A new command is a new declaration.\
