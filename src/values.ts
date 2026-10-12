@@ -1,7 +1,7 @@
 /**
  * The types a flag's value may have (OC1), and how a value written as text is read as one of them.
  *
- * A string matches a stated pattern; a whole number lies within stated bounds; a duration - a whole number
+ * A string matches a stated pattern as a whole, from its first character to its last; a whole number lies within stated bounds; a duration - a whole number
  * with no sign followed by one of `ms`, `s`, `m`, `h` or `d`, in lower case - lies within stated bounds;
  * a URL has one of the stated schemes; a switch takes no value. A value keeps the text it was taken from,
  * which a repeat writes exactly as it was taken (OC5), beside the value `run` is given.
@@ -25,6 +25,11 @@ export function durationMs(text: string): number | undefined {
 	return Number(match[1]) * unit;
 }
 
+/** A stated pattern made to match only a whole value, from its first character to its last. */
+export function wholePattern(pattern: string): RegExp {
+	return new RegExp(`^(?:${pattern})$`);
+}
+
 /** A value read from its text: the value `run` is given, or why the text is not one. */
 export type ReadValue = { readonly ok: true; readonly value: string | number } | { readonly ok: false; readonly why: string };
 
@@ -39,8 +44,9 @@ export interface PreparedType {
 export function prepareType(type: ValueType): PreparedType {
 	switch (type.kind) {
 		case "string": {
-			const pattern = new RegExp(type.pattern);
-			return { kind: "string", read: (text) => pattern.test(text) ? { ok: true, value: text } : { ok: false, why: `does not match the pattern ${type.pattern}` } };
+			// The pattern matches the whole value, not a part of it (OC1): anchored at both ends around all its alternatives.
+			const pattern = wholePattern(type.pattern);
+			return { kind: "string", read: (text) => pattern.test(text) ? { ok: true, value: text } : { ok: false, why: `does not match the pattern ${type.pattern} as a whole` } };
 		}
 		case "integer": {
 			const { min, max } = type;

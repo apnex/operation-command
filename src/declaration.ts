@@ -5,14 +5,14 @@
  * reader and the runner use, so a later change to the application's objects changes nothing.
  */
 import type { CommandDeclaration, ProgramDeclaration, SettingDeclaration, ValueType } from "./declaration-types.js";
-import { durationMs, prepareType, type PreparedType } from "./values.js";
+import { durationMs, prepareType, wholePattern, type PreparedType } from "./values.js";
 
 /** The rules a declaration keeps, each named by the error that refuses a declaration breaking it. */
 export type DeclarationRule =
 	| "program-form" | "unknown-field" | "flag-form" | "flag-taken" | "invocation-reserved" | "value-type"
 	| "variable-form" | "variable-taken" | "setting-without-value" | "required-with-default" | "default-invalid"
 	| "switch-form" | "command-flag-form" | "flag-relation" | "group-form" | "command-form" | "command-taken"
-	| "operation-name" | "call-settings" | "json-switch";
+	| "operation-name" | "call-settings" | "json-reserved";
 
 /** The error refusing a declaration that breaks a rule (OC1); its message begins with the rule's name. */
 export class DeclarationError extends Error {
@@ -70,12 +70,13 @@ export interface CompiledProgram {
 	/** The keys of the bound and preparation settings, when any command invokes. */
 	readonly callBound: string | undefined;
 	readonly prepareTime: string | undefined;
-	/** The key of the `--json` switch, when any command invokes. */
-	readonly json: string | undefined;
 }
 
 /** operation-command's own flag, offered by every command that is not local (OC1, OC3). */
 export const INVOCATION_FLAG = "--invocation";
+
+/** operation-command's own switch choosing an ending's JSON form, offered by every command that is not local (OC1, OC4). */
+export const JSON_FLAG = "--json";
 
 const FLAG_PATTERN = /^--[a-z0-9][a-z0-9-]*$/;
 const VARIABLE_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -117,7 +118,9 @@ function checkType(type: unknown, what: string): PreparedType {
 			onlyFields(type, ["kind", "pattern"], `${what}'s type`);
 			if (typeof type["pattern"] !== "string") fail("value-type", `${what} is a string, whose type states its pattern as text`);
 			try {
+				// The pattern stands alone, so one such as "a)(b" is not made valid by the anchoring around it.
 				new RegExp(type["pattern"] as string);
+				wholePattern(type["pattern"] as string);
 			} catch {
 				fail("value-type", `${what}'s pattern ${quote(type["pattern"])} is not a regular expression`);
 			}
@@ -157,6 +160,7 @@ function checkFlag(part: unknown, what: string, setting: boolean): Omit<Compiled
 	if (typeof flag !== "string" || !FLAG_PATTERN.test(flag)) fail("flag-form", `${what}'s flag ${quote(flag)} is not -- followed by lowercase letters, digits and hyphens`);
 	const name = `${setting ? "the setting" : "the flag"} ${flag as string}`;
 	if (flag === INVOCATION_FLAG) fail("invocation-reserved", `${INVOCATION_FLAG} is operation-command's own flag, offered by every command that is not local, and no flag of the application's`);
+	if (flag === JSON_FLAG) fail("json-reserved", `${JSON_FLAG} is operation-command's own switch, offered by every command that is not local, and no flag of the application's`);
 	if (setting) onlyFields(part, ["flag", "type", "required", "repeats", "excludes", "requires", "description", "variable", "default", "secret"], name);
 	else {
 		for (const key of ["variable", "default", "secret"]) if (part[key] !== undefined) fail("command-flag-form", `${name} is a command's own flag, which takes no variable, no default and no secret; only a setting does`);
@@ -299,16 +303,12 @@ export function compileProgram(declaration: ProgramDeclaration<object>): Compile
 	const invokes = [...commands.values()].some((c) => !c.local);
 	let callBound: string | undefined;
 	let prepareTime: string | undefined;
-	let json: string | undefined;
 	if (invokes) {
 		callBound = callSetting(declaration.callBound, settings, "the call's bound", [1, MAX_BOUND_MS]);
 		prepareTime = callSetting(declaration.prepareTime, settings, "the time to prepare", [0, Number.POSITIVE_INFINITY]);
-		const jsonSetting = settings.find((s) => s.flag === "--json");
-		if (jsonSetting === undefined || !jsonSetting.isSwitch) fail("json-switch", "a program with a command that invokes declares the switch setting --json, choosing an ending's JSON form over its plain form");
-		json = (jsonSetting as CompiledFlag).key;
 	} else if (declaration.callBound !== undefined || declaration.prepareTime !== undefined) {
 		fail("call-settings", "a program whose every command is local names no setting for a call's bound or its time to prepare");
 	}
-	return Object.freeze({ name: name as string, settings: Object.freeze(settings), commands, client: client as object, callBound, prepareTime, json });
+	return Object.freeze({ name: name as string, settings: Object.freeze(settings), commands, client: client as object, callBound, prepareTime });
 }
 

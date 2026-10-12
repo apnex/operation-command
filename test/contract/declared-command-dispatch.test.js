@@ -15,7 +15,6 @@ const declaration = (change = {}) => ({
 	settings: [
 		{ flag: "--timeout", variable: "P_TIMEOUT", default: "10s", type: { kind: "duration", min: "1ms", max: "24h" } },
 		{ flag: "--wait", default: "5s", type: { kind: "duration", min: "0ms", max: "1h" } },
-		{ flag: "--json", type: { kind: "switch" } },
 	],
 	commands: [{ name: "go", operation: "go", changes: false, run }],
 	client: {},
@@ -59,6 +58,22 @@ describe("OC1 - the declaration", () => {
 		refused(withFlag({ flag: "--invocation", type: { kind: "string", pattern: "^.*$" } }), "invocation-reserved");
 	});
 
+	test("--json is operation-command's own switch, and no setting or flag of the application's, of any type", () => {
+		refused(withSetting({ flag: "--json", type: { kind: "switch" } }), "json-reserved");
+		refused(withSetting({ flag: "--json", default: "x", type: { kind: "string", pattern: ".*" } }), "json-reserved");
+		refused(withFlag({ flag: "--json", type: { kind: "switch" } }), "json-reserved");
+		refused(declaration({ commands: [{ name: "go", local: true, run: () => 0, flags: [{ flag: "--json", type: { kind: "switch" } }] }] }), "json-reserved");
+		assert.throws(() => declareProgram(withSetting({ flag: "--json", type: { kind: "switch" } })), /^DeclarationError: json-reserved: --json is operation-command's own switch/);
+	});
+
+	test("a string's pattern is checked standing alone, not as made whole", () => {
+		refused(withSetting({ flag: "--a", type: { kind: "string", pattern: "a)(b" } }), "value-type");
+		refused(withSetting({ flag: "--a", default: "xabcx", type: { kind: "string", pattern: "abc" } }), "default-invalid");
+		refused(withSetting({ flag: "--a", default: "lowx", type: { kind: "string", pattern: "low|high" } }), "default-invalid");
+		assert.ok(declareProgram(withSetting({ flag: "--a", default: "abc", type: { kind: "string", pattern: "abc" } })));
+		assert.ok(declareProgram(withSetting({ flag: "--a", default: "high", type: { kind: "string", pattern: "low|high" } })));
+	});
+
 	test("types and their valid values are checked: pattern, whole-number bounds, duration bounds, URL schemes, kind", () => {
 		refused(withSetting({ flag: "--a", type: { kind: "string", pattern: "(" } }), "value-type");
 		refused(withSetting({ flag: "--a", type: { kind: "string" } }), "value-type");
@@ -81,8 +96,8 @@ describe("OC1 - the declaration", () => {
 	test("flags, variables and commands are well formed and named once", () => {
 		refused(withSetting({ flag: "-a", type: { kind: "switch" } }), "flag-form");
 		refused(withSetting({ flag: "--A", type: { kind: "switch" } }), "flag-form");
-		refused(withSetting({ flag: "--json", type: { kind: "switch" } }), "flag-taken");
-		refused(withFlag({ flag: "--json", type: { kind: "switch" } }), "flag-taken");
+		refused(withSetting({ flag: "--timeout", type: { kind: "switch" } }), "flag-taken");
+		refused(withFlag({ flag: "--wait", type: { kind: "switch" } }), "flag-taken");
 		refused(withSetting({ flag: "--b", variable: "P_TIMEOUT", default: "1", type: { kind: "integer", min: 0, max: 9 } }), "variable-taken");
 		refused(withSetting({ flag: "--b", variable: "1BAD", default: "1", type: { kind: "integer", min: 0, max: 9 } }), "variable-form");
 		refused(declaration({ commands: [{ name: "go", operation: "go", changes: false, run }, { name: "go", operation: "go", changes: true, run }] }), "command-taken");
@@ -103,19 +118,20 @@ describe("OC1 - the declaration", () => {
 	test("relations and groups name flags of their own scope", () => {
 		refused(withFlag({ flag: "--a", excludes: ["--b"], type: { kind: "switch" } }), "flag-relation");
 		refused(withFlag({ flag: "--a", requires: ["--a"], type: { kind: "switch" } }), "flag-relation");
+		refused(withFlag({ flag: "--a", type: { kind: "switch" } }, { groups: [{ exactlyOne: ["--a", "--wait"] }] }), "group-form");
 		refused(withFlag({ flag: "--a", type: { kind: "switch" } }, { groups: [{ exactlyOne: ["--a", "--json"] }] }), "group-form");
 		refused(withFlag({ flag: "--a", type: { kind: "switch" } }, { groups: [{ oneOf: ["--a"] }] }), "group-form");
 		refused(withFlag({ flag: "--a", type: { kind: "switch" } }, { groups: [{ atLeastOne: [] }] }), "group-form");
 	});
 
-	test("a program that invokes names a bound and a preparation setting, each a duration that always takes a value, the bound within 1 ms to 2147483647 ms, and declares the switch --json", () => {
+	test("a program that invokes names a bound and a preparation setting, each a duration that always takes a value, the bound within 1 ms to 2147483647 ms, and declares no --json", () => {
 		refused(declaration({ callBound: undefined }), "call-settings");
 		refused(declaration({ prepareTime: "--nothing" }), "call-settings");
 		refused(declaration({ callBound: "--json" }), "call-settings");
 		refused(declaration({ settings: [{ flag: "--timeout", type: { kind: "duration", min: "1ms", max: "1h" } }, ...declaration().settings.slice(1)] }), "call-settings");
 		refused(declaration({ settings: [{ flag: "--timeout", default: "1s", type: { kind: "duration", min: "0ms", max: "1h" } }, ...declaration().settings.slice(1)] }), "call-settings");
 		refused(declaration({ settings: [{ flag: "--timeout", default: "1s", type: { kind: "duration", min: "1ms", max: "25d" } }, ...declaration().settings.slice(1)] }), "call-settings");
-		refused(declaration({ settings: declaration().settings.slice(0, 2) }), "json-switch");
+		assert.ok(declareProgram(declaration()), "a program that invokes declares no --json: the switch is operation-command's own");
 		const local = { name: "go", local: true, run: () => 0 };
 		assert.ok(declareProgram({ name: "p", settings: [], commands: [local], client: {} }), "a program of local commands only needs neither");
 	});
@@ -128,7 +144,7 @@ describe("OC1 - the declaration", () => {
 	});
 
 	test("the fixture's settings are listed in the declaration's order, which a repeat keeps", () => {
-		assert.deepEqual(SETTINGS.map((s) => s.flag), ["--host", "--service", "--url", "--identity", "--token", "--timeout", "--connect-timeout", "--retries", "--label", "--note", "--verbose", "--json"]);
+		assert.deepEqual(SETTINGS.map((s) => s.flag), ["--host", "--service", "--url", "--identity", "--token", "--timeout", "--connect-timeout", "--retries", "--label", "--note", "--verbose"]);
 	});
 });
 
@@ -137,7 +153,8 @@ const ANSWERING = { prepare: { settle: "ready" }, run: { ending: { ending: "answ
 
 /** Runs the fixture and asserts a usage error: status 1, one line on standard error, nothing on standard output, nothing prepared or invoked. */
 async function usageError(args, { env = BASE_ENV, says } = {}) {
-	for (const json of [false, true]) {
+	// --json is offered by every command that is not local; a local command's unknown --json is tested apart.
+	for (const json of args[0] === "local-echo" ? [false] : [false, true]) {
 		const result = await runFixture(json ? [...args.slice(0, 1), "--json", ...args.slice(1)] : args, { env, scenario: ANSWERING });
 		assert.equal(result.status, 1, `${args.join(" ")}: status 1, not ${result.status}; ${result.stderr}`);
 		assert.equal(result.stdout, "", "nothing on standard output");
@@ -172,9 +189,14 @@ describe("OC2 - reading a command: each kind of usage error", { concurrency: 4 }
 		await usageError(["read", "--name"], { says: /the flag --name has no value/ });
 		await usageError(["read", "--name", "a", "--host"], { says: /the flag --host has no value/ });
 	});
-	test("a switch given a value", async () => {
+	test("a switch given a value, the application's and operation-command's own --json", async () => {
 		await usageError(["read", "--name", "a", "--verbose=yes"], { says: /the switch --verbose takes no value/ });
 		await usageError(["read", "--name", "a", "--verbose="], { says: /the switch --verbose takes no value/ });
+		await usageError(["read", "--name", "a", "--json=yes"], { says: /the switch --json takes no value/ });
+	});
+	test("--json given twice, and --json given to a local command, which is not offered it", async () => {
+		await usageError(["read", "--name", "a", "--json", "--json"], { says: /the flag --json was given twice and may not repeat/ });
+		await usageError(["local-echo", "--message", "m", "--json"], { says: /unknown flag "--json" for the command local-echo/ });
 	});
 	test("a flag given twice that may not repeat, a setting's and a command's own, in either form", async () => {
 		await usageError(["read", "--name", "a", "--name=b"], { says: /the flag --name was given twice and may not repeat/ });
@@ -187,6 +209,15 @@ describe("OC2 - reading a command: each kind of usage error", { concurrency: 4 }
 	});
 	test("a value of the wrong type: text against its pattern, a whole number, a duration, a URL", async () => {
 		await usageError(["read", "--name", "Not_A_Name"], { says: /does not match the pattern/ });
+		// A pattern matches the whole value: a value of which only a part matches is a usage error.
+		// The fixture states these patterns without ^ and $, so a part of each value matching proves nothing.
+		await usageError(["read", "--id", "x0123abcd"], { says: /"x0123abcd" of --id does not match the pattern \[0-9a-f\]\{8\} as a whole/ });
+		await usageError(["read", "--id", "0123abcd9"], { says: /"0123abcd9" of --id does not match the pattern/ });
+		await usageError(["find", "--tag", "k:v k:v!"], { says: /"k:v k:v!" of --tag does not match the pattern/ });
+		await usageError(["find", "--order", "newestx"], { says: /"newestx" of --order does not match the pattern newest\|oldest as a whole/ });
+		await usageError(["find", "--order", "xoldest"], { says: /"xoldest" of --order does not match the pattern/ });
+		const whole = await flagsRead(["find", "--order", "oldest", "--tag", "k:v"]);
+		assert.deepEqual([whole.order, whole.tag], ["oldest", ["k:v"]], "a value the whole of which matches is read");
 		await usageError(["read", "--name", "a", "--retries", "two"], { says: /"two" of --retries is not a whole number/ });
 		await usageError(["read", "--name", "a", "--timeout", "10"], { says: /"10" of --timeout is not a duration/ });
 		await usageError(["read", "--name", "a", "--timeout", "10S"], { says: /is not a duration/ });
@@ -225,7 +256,7 @@ describe("OC2 - groups with none, one and two of their flags", { concurrency: 4 
 	test("exactly one of --name and --id: none and two are usage errors, one is read", async () => {
 		await usageError(["read"], { says: /needs exactly one of --name, --id, and was given none/ });
 		await usageError(["read", "--name", "a", "--id", "0123abcd"], { says: /needs exactly one of --name, --id, and was given 2/ });
-		assert.equal((await flagsRead(["read", "--id", "0123abcd"])).id, "0123abcd");
+		assert.equal((await flagsRead(["read", "--id", "0123abcd"])).id, "0123abcd", "a value the whole of which matches its pattern is read");
 		assert.equal((await flagsRead(["read", "--name", "a"])).name, "a");
 	});
 	test("at least one of the update flags: none is a usage error, one and two are read", async () => {

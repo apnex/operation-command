@@ -17,8 +17,6 @@ const repeatLineOf = (stdout) => {
 	assert.ok(line, "the plain form prints a repeat line");
 	return line.slice("repeat: ".length);
 };
-/** The flags a run read, but for the output form, which the JSON and plain forms differ in alone. */
-const settingsRead = (flags) => ({ ...flags, json: undefined });
 
 /**
  * Runs a command that ends unknown with --json and without, then runs each printed repeat in `changed`
@@ -58,7 +56,9 @@ async function roundTrip(args, { env = BASE_ENV, changed = { FIX_HOST: "host-z",
 			assert.equal(runOf(repeat).repeat, false);
 		}
 	}
-	assert.deepEqual(settingsRead(runOf(json).flags), settingsRead(runOf(plain).flags));
+	// --json is operation-command's own, so run reads the same flags in either form, --json among none of them.
+	assert.deepEqual(runOf(json).flags, runOf(plain).flags);
+	assert.equal("json" in runOf(json).flags, false);
 	return { json, plain, again, shell, array, record };
 }
 
@@ -83,7 +83,9 @@ describe("OC5 - repeating an unknown ending", { concurrency: 3 }, () => {
 	test("a switch on is written as its flag alone, and a switch off is left out", async () => {
 		const on = await roundTrip(["update", "--name", "a", "--no-tags", "--verbose"], { changes: true });
 		assert.ok(on.array.includes("--verbose") && on.array.includes("--no-tags"));
+		// --json, when given, follows the settings and comes before the command's own flags.
 		assert.equal(on.array[on.array.indexOf("--verbose") + 1], "--json");
+		assert.equal(on.array[on.array.indexOf("--json") + 1], "--name");
 		const off = await roundTrip(["update", "--name", "a", "--summary", "s"], { changes: true });
 		assert.ok(!off.array.includes("--verbose") && !off.array.includes("--no-tags"));
 		assert.equal(runOf(off.again).flags.verbose, false);

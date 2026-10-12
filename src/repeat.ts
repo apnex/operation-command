@@ -4,11 +4,11 @@
  *
  * In order: the command's name; each setting that is not secret and took a value, in the order the
  * declaration lists them, with the text of each value exactly as it was taken from its flag, its variable or
- * its default; the command's own flags as given, in the order given; and, for a command that changes
+ * its default; `--json` when it was given; the command's own flags as given, in the order given; and, for a command that changes
  * something, `--invocation` and the identity, so the owner of the effect can recognise the repeat. An
  * `--invocation` the command was given is never copied, since the reader keeps it apart from the flags.
  */
-import { INVOCATION_FLAG } from "./declaration.js";
+import { INVOCATION_FLAG, JSON_FLAG } from "./declaration.js";
 import type { ReadCommand } from "./reading.js";
 
 /** The `repeat` array of an unknown ending: the arguments that follow the program's name. */
@@ -20,6 +20,7 @@ export function repeatArguments(read: ReadCommand, invocation: string): readonly
 		if (taken.flag.isSwitch) args.push(taken.flag.flag);
 		else for (const text of taken.texts) args.push(taken.flag.flag, text);
 	}
+	if (read.json) args.push(JSON_FLAG);
 	for (const given of read.given) {
 		args.push(given.flag.flag);
 		if (given.text !== undefined) args.push(given.text);

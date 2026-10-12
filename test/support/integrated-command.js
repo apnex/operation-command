@@ -130,7 +130,6 @@ const declaration = {
 		{ flag: "--timeout", variable: "FIX_TIMEOUT", default: "10s", type: { kind: "duration", min: "1ms", max: "24h" } },
 		{ flag: "--connect-timeout", variable: "FIX_CONNECT_TIMEOUT", default: "10s", type: { kind: "duration", min: "1ms", max: "24h" } },
 		{ flag: "--verbose", type: { kind: "switch" } },
-		{ flag: "--json", type: { kind: "switch" } },
 	],
 	commands: [
 		{ name: "publish", operation: "create", changes: true, flags: [{ flag: "--name", required: true, type: { kind: "string", pattern: NAME } }, { flag: "--summary", required: true, type: anyText }, { flag: "--tag", repeats: true, type: tag }],

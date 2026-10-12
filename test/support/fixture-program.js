@@ -21,7 +21,6 @@ export const SETTINGS = [
 	{ flag: "--label", repeats: true, type: { kind: "string", pattern: "^[\\s\\S]*$" } },
 	{ flag: "--note", type: { kind: "string", pattern: "^[\\s\\S]*$" } },
 	{ flag: "--verbose", type: { kind: "switch" } },
-	{ flag: "--json", type: { kind: "switch" } },
 ];
 
 const anyText = { kind: "string", pattern: "^[\\s\\S]*$" };
@@ -37,7 +36,8 @@ export const COMMANDS = {
 	] },
 	read: { operation: "read", changes: false, flags: [
 		{ flag: "--name", type: { kind: "string", pattern: NAME } },
-		{ flag: "--id", type: { kind: "string", pattern: "^[0-9a-f]{8}$" } },
+		// Stated without ^ and $: a pattern matches the whole value (OC1).
+		{ flag: "--id", type: { kind: "string", pattern: "[0-9a-f]{8}" } },
 	], groups: [{ exactlyOne: ["--name", "--id"] }] },
 	update: { operation: "update", changes: true, flags: [
 		{ flag: "--name", type: { kind: "string", pattern: NAME } },
@@ -50,8 +50,9 @@ export const COMMANDS = {
 		{ flag: "--force", requires: ["--expect-revision"], type: { kind: "switch" } },
 	], groups: [{ exactlyOne: ["--name", "--id"] }, { atLeastOne: ["--rename", "--summary", "--tag", "--no-tags"] }] },
 	find: { operation: "find", changes: false, flags: [
-		{ flag: "--tag", repeats: true, type: { kind: "string", pattern: "^[a-z0-9-]+:[a-z0-9-]+$" } },
+		{ flag: "--tag", repeats: true, type: { kind: "string", pattern: "[a-z0-9-]+:[a-z0-9-]+" } },
 		{ flag: "--limit", type: { kind: "integer", min: 1, max: 1000 } },
+		{ flag: "--order", type: { kind: "string", pattern: "newest|oldest" } },
 	] },
 };
 

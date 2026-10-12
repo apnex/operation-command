@@ -5,7 +5,7 @@
  * found here before anything is prepared or invoked, and described in one line.
  */
 import { isInvocationId } from "@apnex/operation-call/message-format";
-import { INVOCATION_FLAG, type CompiledCommand, type CompiledFlag, type CompiledProgram } from "./declaration.js";
+import { INVOCATION_FLAG, JSON_FLAG, type CompiledCommand, type CompiledFlag, type CompiledProgram } from "./declaration.js";
 import type { FlagValue, Flags } from "./declaration-types.js";
 
 /** Where a setting's value came from. */
@@ -34,6 +34,8 @@ export interface ReadCommand {
 	readonly given: readonly Given[];
 	/** The identity `--invocation` gave, if it was given. */
 	readonly invocation: string | undefined;
+	/** Whether `--json` was given. */
+	readonly json: boolean;
 }
 
 /** What reading the arguments gives: the command, or the one line saying what was wrong. */
@@ -79,6 +81,7 @@ function readOrThrow(program: CompiledProgram, args: readonly string[], env: { r
 	const texts = new Map<string, string[]>();
 	const given: Given[] = [];
 	let invocation: string | undefined;
+	let json = false;
 	for (let i = 1; i < args.length; i++) {
 		const arg = args[i] as string;
 		if (!arg.startsWith("--")) usage(`unexpected argument ${show(arg)} to the command ${name}; flags are written --flag value, --flag=value, or --flag alone for a switch`);
@@ -91,6 +94,12 @@ function readOrThrow(program: CompiledProgram, args: readonly string[], env: { r
 			if (invocation !== undefined) usage(`the flag ${INVOCATION_FLAG} was given twice and may not repeat`);
 			if (!isInvocationId(value)) usage(`the value ${show(String(value))} of ${INVOCATION_FLAG} is not an invocation identity: 13 digits of milliseconds, a hyphen and 16 lowercase hexadecimal digits`);
 			invocation = value;
+			continue;
+		}
+		if (flagText === JSON_FLAG && !command.local) {
+			if (inline !== undefined) usage(`the switch ${JSON_FLAG} takes no value, and was given ${show(inline)}`);
+			if (json) usage(`the flag ${JSON_FLAG} was given twice and may not repeat`);
+			json = true;
 			continue;
 		}
 		const flag = known.get(flagText);
@@ -162,5 +171,5 @@ function readOrThrow(program: CompiledProgram, args: readonly string[], env: { r
 		if (count === 0) usage(`the command ${name} needs ${g.kind === "exactlyOne" ? "exactly one" : "at least one"} of ${list}, and was given none`);
 		if (count > 1 && g.kind === "exactlyOne") usage(`the command ${name} needs exactly one of ${list}, and was given ${count}`);
 	}
-	return Object.freeze({ command, flags: Object.freeze(values), settings: Object.freeze(settings), given: Object.freeze(given), invocation });
+	return Object.freeze({ command, flags: Object.freeze(values), settings: Object.freeze(settings), given: Object.freeze(given), invocation, json });
 }

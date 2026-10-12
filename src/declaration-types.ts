@@ -6,7 +6,7 @@ import type { CallEnding, JsonValue } from "@apnex/operation-call";
 
 /** A flag's type and its valid values (OC1). */
 export type ValueType =
-	/** A string matching `pattern`, a regular expression written as text, tested against the value as given; anchor it with ^ and $ to match the whole value. */
+	/** A string the whole of which matches `pattern`, a regular expression written as text: from the value's first character to its last. */
 	| { readonly kind: "string"; readonly pattern: string }
 	/** A whole number from `min` to `max`, each a safe integer. */
 	| { readonly kind: "integer"; readonly min: number; readonly max: number }

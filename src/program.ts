@@ -132,7 +132,7 @@ async function runInvoking(program: CompiledProgram, read: ReadCommand, io: Comm
 	const invocation = read.invocation ?? newInvocation(io.identities ?? systemIdentities);
 	const repeat = command.changes && read.invocation !== undefined;
 	const flags: Flags = read.flags;
-	const json = flags[program.json as string] === true;
+	const json = read.json;
 	const repeatArgs = repeatArguments(read, invocation);
 	const report = (ending: Ending): number => {
 		const printed = printEnding(ending, { operation: command.operation, invocation, repeat: repeatArgs, json, program: program.name, word: command.word as Wording | undefined, flags });
