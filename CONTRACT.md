@@ -131,8 +131,10 @@ Tested by: `E19`, in that file; and `E15`, in zorg's `test/e2e/command-configura
 
 ## Reference
 
-Not yet built.\
-This repository, `apnex/operation-command`, private until its first working code: `VISION.md` and, once built, the implementation.
+This repository, `apnex/operation-command`, private until its first working code is certified.\
+The package `@apnex/operation-command` exports `declareProgram`, which checks a declaration and runs one command of it, `DeclarationError`, `EXIT_STATUS`, `INTERRUPTED_LINE`, `RUN_FAILED` and `systemCommandClock`; `@apnex/operation-command/process` exports `runProcess`, which runs a declared program as a Node process, as `export-map.json` records.\
+`command-reference` is deferred under zorg's `D37`.\
+It depends on `@apnex/operation-call` through a `file:` link, and imports no module particular to one runtime outside its process adapter.
 
 ---
 

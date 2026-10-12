@@ -19,6 +19,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./process": {
+      "types": "./dist/process-adapter.d.ts",
+      "default": "./dist/process-adapter.js"
     }
   },
   "files": [
@@ -29,7 +33,13 @@
     "test": "npm run build && node --test \"test/**/*.test.js\"",
     "docs:check": "tools/check-docs.sh"
   },
+  "dependencies": {
+    "@apnex/operation-call": "file:../operation-call"
+  },
   "devDependencies": {
+    "@agp/core": "file:../agp/packages/core",
+    "@agp/node": "file:../agp/packages/node",
+    "@agp/transport-loopback": "file:../agp/packages/transport-loopback",
     "@types/node": "^24.0.0",
     "typescript": "5.9.3"
   }

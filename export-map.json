@@ -1,0 +1,23 @@
+{
+  "package": "@apnex/operation-command",
+  "paths": {
+    ".": {
+      "exports": {
+        "declareProgram": { "part": "operation-command", "serves": ["declared-command-dispatch", "ending-exit-status", "repeat-command-line", "command-call-bound"] },
+        "DeclarationError": { "part": "operation-command", "serves": ["declared-command-dispatch"] },
+        "EXIT_STATUS": { "part": "operation-command", "serves": ["ending-exit-status"] },
+        "INTERRUPTED_LINE": { "part": "operation-command", "serves": ["ending-exit-status"] },
+        "RUN_FAILED": { "part": "operation-command", "serves": ["ending-exit-status", "repeat-command-line"] },
+        "systemCommandClock": { "part": "operation-command", "serves": ["command-call-bound"] }
+      }
+    },
+    "./process": {
+      "exports": {
+        "runProcess": { "part": "operation-command", "serves": ["declared-command-dispatch", "ending-exit-status"] }
+      }
+    }
+  },
+  "deferred": {
+    "command-reference": "D37"
+  }
+}
