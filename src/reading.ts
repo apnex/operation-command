@@ -127,7 +127,6 @@ function readOrThrow(program: CompiledProgram, args: readonly string[], env: { r
 	// Each setting from its flag, else its variable, else its default; a variable set empty counts as unset.
 	const settings: Taken[] = [];
 	const values: { [key: string]: FlagValue } = {};
-	const present = new Set<string>();
 	for (const s of program.settings) {
 		const fromFlag = texts.get(s.flag);
 		const fromVariable = s.variable === undefined ? undefined : env[s.variable];
@@ -143,11 +142,11 @@ function readOrThrow(program: CompiledProgram, args: readonly string[], env: { r
 			if (s.isSwitch) values[s.key] = false;
 			continue;
 		}
-		// A setting given by its flag or by the variable standing in for it is given; one taking its default is not.
-		if (taken.source !== "default") present.add(s.flag);
 		settings.push(taken);
 		values[s.key] = valueOf(s, taken.texts);
 	}
+	// The command's own flags given; relations and groups are among these alone, never a setting (OC1).
+	const present = new Set<string>();
 	for (const f of command.flags) {
 		const own = texts.get(f.flag);
 		if (own === undefined) {
@@ -159,8 +158,8 @@ function readOrThrow(program: CompiledProgram, args: readonly string[], env: { r
 		values[f.key] = valueOf(f, own);
 	}
 
-	// Flags that exclude or require others, then the command's groups.
-	for (const f of [...program.settings, ...command.flags]) {
+	// The command's flags that exclude or require others, then its groups.
+	for (const f of command.flags) {
 		if (!present.has(f.flag)) continue;
 		for (const other of f.excludes) if (present.has(other)) usage(`the flags ${f.flag} and ${other} exclude each other`);
 		for (const other of f.requires) if (!present.has(other)) usage(`the flag ${f.flag} requires ${other}, which was not given`);

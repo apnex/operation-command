@@ -47,6 +47,15 @@ describe("OC1 - the declaration", () => {
 		assert.ok(declareProgram(withSetting({ flag: "--quiet", type: { kind: "switch" } })));
 	});
 
+	test("a switch required or repeating is refused, naming the rule, a setting's and a command's own", () => {
+		refused(withSetting({ flag: "--quiet", required: true, type: { kind: "switch" } }), "switch-form");
+		refused(withSetting({ flag: "--quiet", repeats: true, type: { kind: "switch" } }), "switch-form");
+		refused(withFlag({ flag: "--quiet", required: true, type: { kind: "switch" } }), "switch-form");
+		refused(withFlag({ flag: "--quiet", repeats: true, type: { kind: "switch" } }), "switch-form");
+		assert.throws(() => declareProgram(withFlag({ flag: "--quiet", repeats: true, type: { kind: "switch" } })), /^DeclarationError: switch-form: the flag --quiet is a switch, which is on when given and off otherwise, so it is neither required nor repeats$/);
+		assert.ok(declareProgram(withFlag({ flag: "--quiet", type: { kind: "switch" } })));
+	});
+
 	test("a command's own flag with a variable, a default or a secret is refused", () => {
 		refused(withFlag({ flag: "--name", variable: "P_NAME", type: { kind: "string", pattern: "^.*$" } }), "command-flag-form");
 		refused(withFlag({ flag: "--name", default: "x", type: { kind: "string", pattern: "^.*$" } }), "command-flag-form");
@@ -82,6 +91,10 @@ describe("OC1 - the declaration", () => {
 		refused(withSetting({ flag: "--a", type: { kind: "duration", min: "1s", max: "10" } }), "value-type");
 		refused(withSetting({ flag: "--a", type: { kind: "duration", min: "1h", max: "1m" } }), "value-type");
 		refused(withSetting({ flag: "--a", type: { kind: "duration", min: "1S", max: "1m" } }), "value-type");
+		// A duration's bounds are whole numbers of milliseconds held exactly, so the range compared is the range declared.
+		refused(withSetting({ flag: "--a", type: { kind: "duration", min: "1ms", max: "9007199254740992ms" } }), "value-type");
+		refused(withSetting({ flag: "--a", type: { kind: "duration", min: "1ms", max: `${"9".repeat(400)}d` } }), "value-type");
+		assert.ok(declareProgram(withSetting({ flag: "--a", type: { kind: "duration", min: "0ms", max: "9007199254740991ms" } })));
 		refused(withSetting({ flag: "--a", type: { kind: "url", schemes: [] } }), "value-type");
 		refused(withSetting({ flag: "--a", type: { kind: "url", schemes: ["ws:"] } }), "value-type");
 		refused(withSetting({ flag: "--a", type: { kind: "float" } }), "value-type");
@@ -118,10 +131,59 @@ describe("OC1 - the declaration", () => {
 	test("relations and groups name flags of their own scope", () => {
 		refused(withFlag({ flag: "--a", excludes: ["--b"], type: { kind: "switch" } }), "flag-relation");
 		refused(withFlag({ flag: "--a", requires: ["--a"], type: { kind: "switch" } }), "flag-relation");
+		assert.ok(declareProgram(declaration({ commands: [{ name: "go", operation: "go", changes: false, run, flags: [
+			{ flag: "--a", excludes: ["--b"], requires: ["--c"], type: { kind: "switch" } }, { flag: "--b", type: { kind: "switch" } }, { flag: "--c", type: { kind: "switch" } }] }] })), "a command's own flags relate to each other");
 		refused(withFlag({ flag: "--a", type: { kind: "switch" } }, { groups: [{ exactlyOne: ["--a", "--wait"] }] }), "group-form");
 		refused(withFlag({ flag: "--a", type: { kind: "switch" } }, { groups: [{ exactlyOne: ["--a", "--json"] }] }), "group-form");
 		refused(withFlag({ flag: "--a", type: { kind: "switch" } }, { groups: [{ oneOf: ["--a"] }] }), "group-form");
 		refused(withFlag({ flag: "--a", type: { kind: "switch" } }, { groups: [{ atLeastOne: [] }] }), "group-form");
+	});
+
+	test("excludes and requires are declared only among a command's own flags: a setting that declares either, and a command's flag relating a setting, are refused, naming the rule", () => {
+		const text = { kind: "string", pattern: "[\\s\\S]*" };
+		const settings = declaration().settings;
+		const message = /^flag-relation: the setting --a declares (excludes|requires), but a setting excludes and requires nothing: only a command's own flag may exclude or require another of that command's own flags$/;
+		// The two declarations whose repeats the reader once refused: a defaulted setting excluding, and requiring, another setting.
+		for (const key of ["excludes", "requires"]) {
+			const decl = declaration({ settings: [...settings, { flag: "--a", default: "x", type: text, [key]: ["--b"] }, { flag: "--b", type: text }] });
+			refused(decl, "flag-relation");
+			assert.throws(() => declareProgram(decl), (error) => message.test(error.message));
+			// A setting relating a command's own flag, or relating nothing at all, declares a relation all the same.
+			refused(declaration({ settings: [...settings, { flag: "--a", variable: "P_A", required: true, type: text, [key]: ["--name"] }], commands: [{ name: "go", operation: "go", changes: false, run, flags: [{ flag: "--name", type: text }] }] }), "flag-relation");
+			refused(withSetting({ flag: "--a", type: { kind: "switch" }, [key]: [] }), "flag-relation");
+			// A command's own flag relating a setting, by its variable and default or a switch.
+			for (const setting of ["--timeout", "--wait"]) {
+				refused(withFlag({ flag: "--a", [key]: [setting], type: { kind: "switch" } }), "flag-relation");
+				assert.throws(() => declareProgram(withFlag({ flag: "--a", [key]: [setting], type: { kind: "switch" } })), /^DeclarationError: flag-relation: --a excludes or requires "--(timeout|wait)", which is not another of the command go's own flags; a flag relates only to its command's own flags, never to a setting$/);
+			}
+		}
+		let ran = 0;
+		const counting = declaration({ settings: [...settings, { flag: "--a", default: "x", type: text, excludes: ["--b"] }, { flag: "--b", type: text }], commands: [{ name: "go", operation: "go", changes: false, run: () => { ran++; return run(); } }] });
+		refused(counting, "flag-relation");
+		assert.equal(ran, 0, "refused when given, before any argument is read");
+	});
+
+	test("the bound setting's declared range lies wholly within 1 to 2147483647 milliseconds, and the preparation setting's within 0 to that maximum, each bound checked; a range partly or wholly outside is refused", () => {
+		const bound = (min, max, def) => ({ flag: "--timeout", default: def, type: { kind: "duration", min, max } });
+		const wait = (min, max, def) => ({ flag: "--wait", default: def, type: { kind: "duration", min, max } });
+		const [timeout, waiting] = declaration().settings;
+		let ran = 0;
+		const counted = (settings) => declaration({ settings, commands: [{ name: "go", operation: "go", changes: false, run: () => { ran++; return run(); } }], client: { prepare: () => { ran++; return "ready"; } } });
+		for (const [min, max, def, what] of [
+			["25d", "30d", "25d", "wholly above"], ["2147483649ms", "2147483650ms", "2147483649ms", "wholly above, just past the maximum"],
+			["0ms", "0ms", "0ms", "wholly below"], ["1ms", "25d", "1s", "its upper bound above"], ["1s", "2147483648ms", "1s", "its upper bound one past the maximum"],
+			["0ms", "1h", "1s", "its lower bound below"], ["0ms", "2147483648ms", "1s", "both bounds outside"],
+		]) {
+			refused(counted([bound(min, max, def), waiting]), "call-settings");
+			assert.throws(() => declareProgram(counted([bound(min, max, def), waiting])), (error) => error.message.startsWith(`call-settings: --timeout, giving the call's bound, declares the range `) && error.message.endsWith("which does not lie within 1 to 2147483647 milliseconds"), what);
+		}
+		for (const [min, max, def, what] of [["25d", "30d", "25d", "wholly above"], ["0ms", "25d", "1s", "its upper bound above"], ["1ms", "2147483648ms", "1s", "its upper bound one past the maximum"]]) {
+			refused(counted([timeout, wait(min, max, def)]), "call-settings");
+			assert.throws(() => declareProgram(counted([timeout, wait(min, max, def)])), /which does not lie within 0 to 2147483647 milliseconds$/, what);
+		}
+		assert.equal(ran, 0, "each refused when given, before anything is prepared or run");
+		assert.ok(declareProgram(counted([bound("1ms", "2147483647ms", "1s"), wait("0ms", "2147483647ms", "0ms")])), "the exact ends of each range are within it");
+		assert.ok(declareProgram(counted([bound("2147483647ms", "2147483647ms", "2147483647ms"), wait("2147483647ms", "2147483647ms", "2147483647ms")])));
 	});
 
 	test("a program that invokes names a bound and a preparation setting, each a duration that always takes a value, the bound within 1 ms to 2147483647 ms, and declares no --json", () => {
@@ -179,6 +241,8 @@ describe("OC2 - reading a command: each kind of usage error", { concurrency: 4 }
 		assert.equal(none.status, 1);
 		assert.equal(none.stdout, "");
 		assert.match(none.stderr, /^usage: no command was given; the commands are publish, read, update, find, local-echo\n$/);
+		assert.deepEqual(none.records.filter((r) => ["prepare", "run", "call", "local"].includes(r.event)), [], "nothing prepared, nothing invoked");
+		await usageError(["--json"], { says: /^usage: unknown command "--json"; the commands are publish, read, update, find, local-echo\n$/ });
 	});
 	test("an unknown flag, and an argument that is no flag", async () => {
 		await usageError(["read", "--name", "a", "--colour", "red"], { says: /unknown flag "--colour"/ });
@@ -249,6 +313,35 @@ describe("OC2 - reading a command: each kind of usage error", { concurrency: 4 }
 		await usageError(["read", "--name", "a", "--invocation=1791540000000-3F9A0C1D2B4E5F60"], { says: /is not an invocation identity/ });
 		await usageError(["read", "--name", "a", "--invocation"], { says: /--invocation has no value/ });
 		await usageError(["local-echo", "--invocation", "1791540000000-3f9a0c1d2b4e5f60"], { says: /unknown flag "--invocation"/ });
+	});
+});
+
+describe("OC2 - where several usage errors apply, the first met is reported", { concurrency: 4 }, () => {
+	test("the arguments in the order given, before the settings' variables", async () => {
+		await usageError(["read", "--bad", "--retries", "bad"], { says: /^usage: unknown flag "--bad" for the command read\n$/ });
+		await usageError(["read", "--retries", "bad", "--bad"], { says: /^usage: the value "bad" of --retries is not a whole number\n$/ });
+		await usageError(["read", "--name", "a", "--name", "b", "--colour"], { says: /^usage: the flag --name was given twice and may not repeat\n$/ });
+		await usageError(["read", "--colour"], { env: { FIX_RETRIES: "many" }, says: /^usage: unknown flag "--colour" for the command read\n$/ });
+	});
+	test("then the settings' variables and required settings, in the declaration's order", async () => {
+		await usageError(["read", "--name", "a"], { env: { FIX_IDENTITY: "alice", FIX_RETRIES: "many" }, says: /^usage: the flag --host, or its variable FIX_HOST, is required\n$/ });
+		await usageError(["read", "--name", "a"], { env: { FIX_HOST: "host-a", FIX_SERVICE: "Not!" }, says: /^usage: the value "Not!" of the variable FIX_SERVICE, standing in for --service, does not match/ });
+		await usageError(["read", "--name", "a"], { env: { FIX_HOST: "host-a", FIX_RETRIES: "many" }, says: /^usage: the flag --identity, or its variable FIX_IDENTITY, is required\n$/ });
+	});
+	test("then the command's required flags, then its flags that exclude or require others, then its groups", async () => {
+		await usageError(["publish"], { env: { FIX_HOST: "host-a" }, says: /--identity, or its variable FIX_IDENTITY, is required/ });
+		await usageError(["publish"], { says: /^usage: the flag --name is required by the command publish\n$/ });
+		await usageError(["update", "--tag", "k:v", "--no-tags", "--force"], { says: /^usage: the flags --tag and --no-tags exclude each other\n$/ });
+		await usageError(["update", "--force"], { says: /^usage: the flag --force requires --expect-revision, which was not given\n$/ });
+		await usageError(["update", "--rename", "b"], { says: /^usage: the command update needs exactly one of --name, --id, and was given none\n$/ });
+		// A command with a required flag and relations both broken reports its required flag first.
+		const text = { kind: "string", pattern: ".*" };
+		const program = declareProgram(declaration({ commands: [{ name: "go", operation: "go", changes: false, run, flags: [
+			{ flag: "--x", required: true, type: text }, { flag: "--y", excludes: ["--z"], type: text }, { flag: "--z", type: text }, { flag: "--w", type: text }], groups: [{ exactlyOne: ["--w", "--x"] }] }] }));
+		const read = async (args) => { let err = ""; const status = await program.run({ args, env: {}, stdout: () => assert.fail("nothing on standard output"), stderr: (t) => { err += t; } }); return [status, err]; };
+		assert.deepEqual(await read(["go", "--y", "1", "--z", "2"]), [1, "usage: the flag --x is required by the command go\n"]);
+		assert.deepEqual(await read(["go", "--x", "0", "--w", "3", "--y", "1", "--z", "2"]), [1, "usage: the flags --y and --z exclude each other\n"]);
+		assert.deepEqual(await read(["go", "--x", "0", "--w", "3"]), [1, "usage: the command go needs exactly one of --w, --x, and was given 2\n"]);
 	});
 });
 

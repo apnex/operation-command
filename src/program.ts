@@ -11,7 +11,7 @@ import type { IdentitySource } from "@apnex/operation-call";
 import { isInvocationId } from "@apnex/operation-call/message-format";
 import { compileProgram, type CompiledCommand, type CompiledProgram } from "./declaration.js";
 import type { CommandClock, Flags, LocalContext, ProgramDeclaration, RunContext } from "./declaration-types.js";
-import { EXIT_STATUS, oneLine, printEnding, readEnding, RUN_FAILED, type Ending, type Wording } from "./endings.js";
+import { EXIT_STATUS, observeAll, oneLine, printEnding, readEnding, RUN_FAILED, type Ending, type Wording } from "./endings.js";
 import { readCommand, type ReadCommand } from "./reading.js";
 import { repeatArguments } from "./repeat.js";
 import { systemCommandClock, systemIdentities } from "./system-ports.js";
@@ -68,9 +68,26 @@ const isObject = (value: unknown): value is { readonly [key: string]: unknown } 
 /** What `prepare` settled to, judged (OC3): ready, its not-delivered ending's codes, or what was wrong. */
 type Prepared = { readonly kind: "ready" } | { readonly kind: "ending"; readonly agpCode: string | null; readonly proxyCode: string | null } | { readonly kind: "failed"; readonly diagnostic: string };
 
+/** Judges what prepare settled to; never throws, so reading a malformed result is inside the boundary that makes it not delivered. */
 function judgePrepared(outcome: { readonly value: unknown } | { readonly error: unknown }): Prepared {
-	if ("error" in outcome) return { kind: "failed", diagnostic: `diagnostic: prepare failed: ${oneLine(outcome.error)}` };
+	if ("error" in outcome) {
+		// What it rejected with is observed too, so a promise given as the reason leaves no rejection escaping.
+		observeAll(outcome.error);
+		return { kind: "failed", diagnostic: `diagnostic: prepare failed: ${oneLine(outcome.error)}` };
+	}
 	const value = outcome.value;
+	let judged: Prepared;
+	try {
+		judged = judgeValue(value);
+	} catch (error) {
+		judged = { kind: "failed", diagnostic: `diagnostic: prepare settled to what could not be read: ${oneLine(error)}` };
+	}
+	// Every promise the result holds is observed, a malformed one's or one beside the fields read, so none of their rejections escapes.
+	observeAll(value);
+	return judged;
+}
+
+function judgeValue(value: unknown): Prepared {
 	if (value === "ready") return { kind: "ready" };
 	if (isObject(value) && value["ending"] === "not-delivered") {
 		const agpCode = value["agpCode"] ?? null;
@@ -101,9 +118,16 @@ async function runCommand(program: CompiledProgram, io: CommandIo): Promise<numb
 	const clock = io.clock ?? systemCommandClock;
 	// The reading when the command began reading its arguments, from which preparing's deadline runs (OC3).
 	const began = readClock(clock);
-	let onInterrupt = (): void => undefined;
+	// An interruption from the moment of subscribing is remembered, one while the arguments are read included,
+	// and handled as an interruption before run: nothing is prepared or invoked (OC4).
+	let interruptedWhileReading = false;
+	let onInterrupt = (): void => { interruptedWhileReading = true; };
 	const unsubscribe = io.interruptions?.subscribe(() => onInterrupt());
 	const reading = readCommand(program, io.args, io.env);
+	if (interruptedWhileReading) {
+		io.stderr(`${INTERRUPTED_LINE}\n`);
+		return EXIT_STATUS.interrupted;
+	}
 	if (!reading.ok) {
 		io.stderr(`usage: ${reading.usage}\n`);
 		return EXIT_STATUS.usage;
@@ -181,6 +205,7 @@ async function runInvoking(program: CompiledProgram, read: ReadCommand, io: Comm
 	const outcome = await outcomeOf(() => (command.run as (context: RunContext<object>) => unknown)(context));
 	// The ending is given: an interruption from here, while it is printed included, changes nothing.
 	interruptWith(() => undefined);
+	if ("error" in outcome) observeAll(outcome.error);
 	const ended = "error" in outcome ? { ok: false as const, why: `run failed: ${oneLine(outcome.error)}` } : readEnding(outcome.value);
 	if (!ended.ok) {
 		// Whether run invoked anything cannot be known, so the ending is unknown, with the repeat that goes with it.

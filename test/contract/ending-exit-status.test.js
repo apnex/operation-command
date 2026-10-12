@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { declareProgram, EXIT_STATUS, INTERRUPTED_LINE } from "@apnex/operation-command";
 import { sleep, within } from "../support/clock-timer.js";
-import { fixtureDeclaration } from "../support/fixture-program.js";
+import { fixtureDeclaration, MALFORMED } from "../support/fixture-program.js";
 import { BASE_ENV, plainFacts, runFixture, startFixture } from "../support/run-command.js";
 
 const INVOCATION = /^[0-9]{13}-[0-9a-f]{16}$/;
@@ -36,7 +36,47 @@ describe("OC4 - each ending's status, its JSON object whole and its plain form",
 		const facts = plainFacts(plain.stdout);
 		assert.equal(plain.stdout, `ending: answered\noperation: create\ninvocation: ${facts.invocation}\nanswer-ok: true\nanswer-json: ${JSON.stringify(answer)}\nverbose: false\n`);
 		const unworded = await runFixture(BASE, { env: BASE_ENV, scenario: { plainAnswer: true, run: { ending: { ending: "answered", answer } } } });
+		assert.deepEqual([unworded.status, unworded.stderr], [0, ""], "status 0, and no diagnostic where the application gives no word");
 		assert.equal(unworded.stdout, `ending: answered\noperation: create\ninvocation: ${plainFacts(unworded.stdout).invocation}\nanswer: ${JSON.stringify(answer)}\n`, "an answer the application does not word is printed as JSON");
+	});
+
+	test("an answer the application does not word is written answer: and its JSON, a string's included, with no diagnostic", async () => {
+		for (const answer of ["hello", "two\nlines", 7, null, ["a", 1]]) {
+			const r = await runFixture(BASE, { env: BASE_ENV, scenario: { plainAnswer: true, run: { ending: { ending: "answered", answer } } } });
+			assert.deepEqual([r.status, r.stderr], [0, ""]);
+			assert.equal(r.stdout, `ending: answered\noperation: create\ninvocation: ${plainFacts(r.stdout).invocation}\nanswer: ${JSON.stringify(answer)}\n`, JSON.stringify(answer));
+		}
+	});
+
+	test("a word that throws, or returns what is no text, a promise included: the plain form writes answer: and the answer's JSON, with one diagnostic line, status 0; what it threw is never the wording", async () => {
+		const answer = { safe: true, said: "it's" };
+		for (const [word, why] of [
+			["throws-string", "word threw word failed"], ["throws-error", "word threw Error: word broke"], ["returns-number", "word returned a number, not text"],
+			["returns-object", "word returned an object, not text"], ["returns-rejecting-promise", "word returned a promise, not text"], ["returns-resolving-promise", "word returned a promise, not text"],
+		]) {
+			const { json, plain } = await ended({ ending: "answered", answer }, { word });
+			assert.deepEqual([plain.status, plain.signal, plain.stderr], [0, null, `diagnostic: the answer could not be worded, so it is printed as JSON: ${why}\n`], word);
+			assert.equal(plain.stdout, `ending: answered\noperation: create\ninvocation: ${plainFacts(plain.stdout).invocation}\nanswer: ${JSON.stringify(answer)}\n`, word);
+			assert.deepEqual([json.status, json.stderr, JSON.parse(json.stdout).answer], [0, "", answer], "the JSON form does not word the answer");
+		}
+	});
+
+	test("a promise word returns is consumed: its rejection never escapes, in this process or the command's", async () => {
+		const escaped = [];
+		const onRejection = (reason) => escaped.push(reason);
+		process.on("unhandledRejection", onRejection);
+		try {
+			const decl = fixtureDeclaration({ word: "returns-rejecting-promise", run: { ending: { ending: "answered", answer: { a: 1 } } } });
+			const out = [];
+			const err = [];
+			const status = await declareProgram(decl).run({ args: BASE, env: BASE_ENV, stdout: (t) => out.push(t), stderr: (t) => err.push(t) });
+			await sleep(50);
+			assert.deepEqual([status, err], [0, ["diagnostic: the answer could not be worded, so it is printed as JSON: word returned a promise, not text\n"]]);
+			assert.ok(out.join("").endsWith('answer: {"a":1}\n'));
+			assert.deepEqual(escaped, [], "no unhandled rejection");
+		} finally {
+			process.off("unhandledRejection", onRejection);
+		}
 	});
 
 	test("refused: status 2, the refusal record unchanged", async () => {
@@ -82,6 +122,57 @@ describe("OC4 - each ending's status, its JSON object whole and its plain form",
 		}
 	});
 
+	test("a run whose result cannot be read as an ending - a thenable, a throwing getter on it, a rejected inner promise, no JSON - ends unknown with run-failed, its repeat and one diagnostic line, through the process adapter", async () => {
+		for (const [malformed, why] of [
+			["bigint-answer", "run returned an answered ending whose answer is no JSON value: answer is a BigInt, not a JSON value"],
+			["cyclic-answer", "run returned an answered ending whose answer is no JSON value: answer.self holds itself"],
+			["throwing-ending", "run returned what could not be read as an ending: Error: the ending getter threw"],
+			["throwing-answer", "run returned what could not be read as an ending: Error: the answer getter threw"],
+			["throwing-code", "run returned what could not be read as an ending: Error: the code getter threw"],
+			["throwing-then", "run failed: Error: the then getter threw"],
+			["thenable-throws", "run failed: Error: then threw"],
+			["thenable-throwing-ending", "run returned what could not be read as an ending: Error: the settled ending getter threw"],
+			["thenable-rejected-inner", "run failed: Error: the inner promise rejected"],
+			["rejected-answer", "run returned an answered ending whose answer is no JSON value: answer is an object that is no plain JSON object"],
+			["rejected-code", "run returned a not-delivered ending without agpCode, proxyCode and earlierAttemptsUncertain"],
+		]) {
+			const json = await runFixture([...BASE, "--json"], { env: BASE_ENV, scenario: { run: { malformed } } });
+			const plain = await runFixture(BASE, { env: BASE_ENV, scenario: { run: { malformed } } });
+			for (const r of [json, plain]) {
+				assert.deepEqual([r.status, r.signal, r.stderr], [4, null, `diagnostic: ${why}\n`], `${malformed}: status 4, one diagnostic line, nothing escaping`);
+				assert.equal(r.records.filter((x) => x.event === "run").length, 1);
+			}
+			const record = JSON.parse(json.stdout);
+			assert.deepEqual(record, { ending: "unknown", operation: "create", invocation: record.invocation, reason: "run-failed", agpCode: null, deliveryReport: null,
+				repeat: ["publish", "--host", "host-a", "--service", "store", "--url", "ws://127.0.0.1:47100/agp", "--identity", "alice", "--timeout", "10s", "--connect-timeout", "5s", "--retries", "3", "--json", "--name", "a", "--summary", "it's \"quoted\"", "--invocation", record.invocation] });
+			const facts = plainFacts(plain.stdout);
+			assert.deepEqual([facts.ending, facts.reason, facts.agpCode, facts.deliveryReport], ["unknown", "run-failed", "null", "null"]);
+			assert.match(facts.repeat, /^'fixture' 'publish' .* '--invocation' '[0-9]{13}-[0-9a-f]{16}'$/);
+		}
+	});
+
+	test("reading a malformed run result lets no rejection escape and observes every promise it holds", async () => {
+		const escaped = [];
+		const onRejection = (reason) => escaped.push(reason);
+		process.on("unhandledRejection", onRejection);
+		try {
+			for (const malformed of Object.keys(MALFORMED)) {
+				const decl = fixtureDeclaration({});
+				decl.commands = decl.commands.map((c) => c.local ? c : { ...c, run: () => MALFORMED[malformed]() });
+				const out = [];
+				const err = [];
+				const status = await within(declareProgram(decl).run({ args: [...BASE, "--json"], env: BASE_ENV, stdout: (t) => out.push(t), stderr: (t) => err.push(t) }), malformed);
+				assert.equal(status, 4, malformed);
+				assert.equal(JSON.parse(out.join("")).reason, "run-failed");
+				assert.equal(err.length, 1);
+			}
+			await sleep(50);
+			assert.deepEqual(escaped, [], "no unhandled rejection");
+		} finally {
+			process.off("unhandledRejection", onRejection);
+		}
+	});
+
 	test("a usage error, with --json and without, leaves standard output empty and exits 1", async () => {
 		for (const args of [["publish", "--name", "a"], ["publish", "--name", "a", "--json"]]) {
 			const r = await runFixture(args, { env: BASE_ENV, scenario: { prepare: { settle: "ready" } } });
@@ -101,6 +192,14 @@ describe("OC4 - interruptions, sent to the command as real signals", { concurren
 			assert.deepEqual([r.status, r.signal, r.stdout, r.stderr], [1, null, "", `${INTERRUPTED_LINE}\n`], `${sig} ${args.join(" ")}`);
 			assert.ok(events(r).includes("prepare-aborted"));
 			assert.ok(!events(r).includes("run"));
+		}
+	});
+
+	test("an interruption delivered while the arguments are read is remembered: nothing is prepared or invoked, status 1, its line on standard error, with --json and without", async () => {
+		for (const args of [BASE, [...BASE, "--json"], ["read", "--name", "a", "--json"], ["local-echo", "--message", "m"]]) {
+			const r = await runFixture(args, { env: BASE_ENV, scenario: { interruptWhileReading: true, prepare: { settle: "ready" }, run: { ending: { ending: "answered", answer: { ok: true } } } } });
+			assert.deepEqual([r.status, r.signal, r.stdout, r.stderr], [1, null, "", `${INTERRUPTED_LINE}\n`], args.join(" "));
+			assert.deepEqual(r.records.filter((x) => x.event !== "clock-began"), [{ event: "interrupted-while-reading", listeners: 1 }], "interrupted while reading, after subscribing; nothing prepared, run or invoked");
 		}
 	});
 
@@ -153,14 +252,26 @@ describe("OC4 - interruptions, sent to the command as real signals", { concurren
 
 	test("an interruption after the ending was given, and one during its printing, change nothing: the ending is printed whole with its status", async () => {
 		const ending = { ending: "answered", answer: { ok: "printed" } };
-		for (const [args, scenario] of [[[...BASE, "--json"], { run: { ending, selfSignal: "SIGINT" } }], [BASE, { run: { ending, selfSignal: "SIGTERM" }, wordSelfSignal: "SIGINT" }]]) {
+		for (const [args, scenario, signals] of [
+			[[...BASE, "--json"], { run: { ending, selfSignal: "SIGINT" }, holdWrite: { until: ["SIGINT"] } }, ["SIGINT"]],
+			[BASE, { run: { ending, selfSignal: "SIGTERM" }, wordSelfSignal: "SIGINT", holdWrite: { until: ["SIGTERM", "SIGINT"] } }, ["SIGTERM", "SIGINT"]],
+			[[...BASE, "--json"], { run: { ending }, holdWrite: { until: ["SIGTERM"], duringWrite: "SIGTERM" } }, ["SIGTERM"]],
+			[BASE, { run: { ending }, holdWrite: { until: ["SIGINT"], duringWrite: "SIGINT" } }, ["SIGINT"]],
+		]) {
 			const r = await runFixture(args, { env: BASE_ENV, scenario: { prepare: { settle: "ready" }, ...scenario } });
 			assert.deepEqual([r.status, r.signal, r.stderr], [0, null, ""]);
-			if (args.includes("--json")) assert.deepEqual(JSON.parse(r.stdout).answer, { ok: "printed" });
-			else {
-				assert.equal(r.stdout.split("\n").length, 7, "every line printed");
+			// Each signal reached the process, the process adapter's handler among its listeners, before standard output was released and the process exited.
+			const received = r.records.filter((x) => x.event === "signal-received");
+			assert.deepEqual(received.map((x) => x.signal).sort(), [...signals].sort());
+			assert.ok(received.every((x) => x.listeners === 2), "the process adapter's handler and the test's own");
+			const released = r.records.findIndex((x) => x.event === "write-released");
+			assert.ok(released > r.records.findLastIndex((x) => x.event === "signal-received"), "the write was released only once every signal was received");
+			if (scenario.holdWrite.duringWrite) assert.ok(r.records.findIndex((x) => x.event === "write-held") < r.records.findIndex((x) => x.event === "signal-received"), "received while the ending was being written");
+			if (args.includes("--json")) assert.deepEqual(JSON.parse(r.stdout), { ending: "answered", operation: "create", invocation: JSON.parse(r.stdout).invocation, answer: { ok: "printed" } });
+			else if (scenario.wordSelfSignal) {
+				assert.equal(r.stdout, `ending: answered\noperation: create\ninvocation: ${plainFacts(r.stdout).invocation}\nanswer-ok: printed\nanswer-json: {"ok":"printed"}\nverbose: false\n`, "every line printed");
 				assert.ok(events(r).includes("wording"));
-			}
+			} else assert.equal(r.stdout, `ending: answered\noperation: create\ninvocation: ${plainFacts(r.stdout).invocation}\nanswer-ok: printed\nanswer-json: {"ok":"printed"}\nverbose: false\n`);
 		}
 	});
 });

@@ -72,9 +72,49 @@ const aborted = (signal) => new Promise((resolve) => {
 /** What a scenario's `settle` names: a value, or a rejection. */
 const settleWith = (spec) => spec !== null && typeof spec === "object" && "reject" in spec ? Promise.reject(new Error(spec.reject)) : Promise.resolve(spec);
 
+/**
+ * Malformed results a client's prepare or run may give, which no JSON scenario can write, each named: a
+ * thenable, a throwing getter on the result or on the thenable, a rejected inner promise, values that are no
+ * JSON. Each is made afresh when named, so a promise it holds rejects only for the case that asked for it.
+ */
+export const MALFORMED = Object.freeze({
+	/** An answered ending whose answer is a BigInt. */
+	"bigint-answer": () => ({ ending: "answered", answer: 1n }),
+	/** An answered ending whose answer holds itself. */
+	"cyclic-answer": () => { const answer = { a: 1 }; answer.self = answer; return { ending: "answered", answer }; },
+	/** A result whose ending is a getter that throws. */
+	"throwing-ending": () => ({ get ending() { throw new Error("the ending getter threw"); } }),
+	/** An answered ending whose answer is a getter that throws. */
+	"throwing-answer": () => ({ ending: "answered", get answer() { throw new Error("the answer getter threw"); } }),
+	/** A not-delivered ending whose agpCode is a getter that throws. */
+	"throwing-code": () => ({ ending: "not-delivered", get agpCode() { throw new Error("the code getter threw"); }, proxyCode: null, earlierAttemptsUncertain: false }),
+	/** A thenable whose then is a getter that throws. */
+	"throwing-then": () => ({ get then() { throw new Error("the then getter threw"); } }),
+	/** A thenable whose then throws when called. */
+	"thenable-throws": () => ({ then() { throw new Error("then threw"); } }),
+	/** A thenable that settles to a result whose ending getter throws. */
+	"thenable-throwing-ending": () => ({ then(resolve) { resolve({ get ending() { throw new Error("the settled ending getter threw"); } }); } }),
+	/** A thenable that settles to a rejected inner promise. */
+	"thenable-rejected-inner": () => ({ then(resolve) { resolve(Promise.reject(new Error("the inner promise rejected"))); } }),
+	/** An answered ending whose answer is a promise that rejects. */
+	"rejected-answer": () => ({ ending: "answered", answer: Promise.reject(new Error("the answer's promise rejected")) }),
+	/** A not-delivered ending whose agpCode is a promise that rejects. */
+	"rejected-code": () => ({ ending: "not-delivered", agpCode: Promise.reject(new Error("the code's promise rejected")), proxyCode: null, earlierAttemptsUncertain: false }),
+});
+
+/** The wordings a scenario's `word` may name, each failing in its own way, besides the fixture's own. */
+const WORDINGS = Object.freeze({
+	"throws-string": () => { throw "word failed"; },
+	"throws-error": () => { throw new Error("word broke"); },
+	"returns-number": () => 42,
+	"returns-object": () => ({ text: "not text" }),
+	"returns-rejecting-promise": () => Promise.reject(new Error("word rejected")),
+	"returns-resolving-promise": () => Promise.resolve("too late"),
+});
+
 /** The fixture client's prepare, as the scenario's `prepare` says. */
 function fixturePrepare(spec, record) {
-	return async ({ deadline, clock, signal, command, flags }, injected) => {
+	const prepare = async ({ deadline, clock, signal, command, flags }, injected) => {
 		const calledAt = clock.now();
 		record("prepare", { deadline, calledAt, clockInjected: clock === injected, signalIsAbortSignal: signal instanceof AbortSignal, command, flags });
 		signal.addEventListener("abort", () => record("prepare-aborted", { at: clock.now() }), { once: true });
@@ -82,9 +122,21 @@ function fixturePrepare(spec, record) {
 		if (spec.untilAbort) await aborted(signal);
 		if (spec.afterCallMs !== undefined) await untilOnClock(clock, calledAt + spec.afterCallMs);
 		if (spec.afterDeadlineMs !== undefined) await untilOnClock(clock, deadline + spec.afterDeadlineMs);
+		if (spec.malformed !== undefined) {
+			// Settling late, after an interruption: the malformed result is the async function's, adopted as it settles.
+			record("prepare-settled", { at: clock.now(), malformed: spec.malformed });
+			return MALFORMED[spec.malformed]();
+		}
 		const settle = "settle" in spec ? spec.settle : "ready";
 		record("prepare-settled", { at: clock.now(), settle });
 		return settleWith(settle);
+	};
+	if (spec.malformed === undefined || spec.untilAbort) return prepare;
+	// A malformed result given at once, as the client returned it: no async function adopts a thenable first.
+	return (request) => {
+		record("prepare", { deadline: request.deadline, calledAt: request.clock.now(), command: request.command });
+		record("prepare-settled", { at: request.clock.now(), malformed: spec.malformed });
+		return MALFORMED[spec.malformed]();
 	};
 }
 
@@ -97,6 +149,11 @@ function endingFor(spec, context, invocation) {
 
 /** The fixture's run for every command that invokes, as the scenario's `run` says. */
 function fixtureRun(spec, record, identities) {
+	// A malformed result is returned at once, as the client returned it: no async function adopts a thenable first.
+	if (spec.malformed !== undefined) return (context) => {
+		record("run", { command: context.command, operation: context.operation, flags: context.flags, bound: context.bound, invocation: context.invocation, repeat: context.repeat });
+		return MALFORMED[spec.malformed]();
+	};
 	return async (context) => {
 		record("run", { command: context.command, operation: context.operation, flags: context.flags, bound: context.bound, invocation: context.invocation, repeat: context.repeat, signalIsAbortSignal: context.signal instanceof AbortSignal, frozen: Object.isFrozen(context) });
 		context.signal.addEventListener("abort", () => record("run-aborted", { at: performance.now() }), { once: true });
@@ -130,7 +187,7 @@ export function fixtureDeclaration(scenario, { clock } = {}) {
 	const run = fixtureRun(scenario.run ?? {}, record, identities);
 	const prepare = scenario.prepare === undefined ? undefined : fixturePrepare(scenario.prepare, record);
 	const client = prepare === undefined ? {} : { prepare: (request) => prepare(request, clock) };
-	const word = (answer, flags) => {
+	const word = scenario.word !== undefined ? WORDINGS[scenario.word] : (answer, flags) => {
 		if (scenario.wordSelfSignal) {
 			record("wording", {});
 			process.kill(process.pid, scenario.wordSelfSignal);

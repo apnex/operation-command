@@ -5,6 +5,9 @@
 // `run` and reports the command not delivered. Commands run as child processes of the fixture application.
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
+import { declareProgram } from "@apnex/operation-command";
+import { sleep, within } from "../support/clock-timer.js";
+import { fixtureDeclaration, MALFORMED } from "../support/fixture-program.js";
 import { BASE_ENV, plainFacts, runFixture } from "../support/run-command.js";
 
 const INVOCATION = /^[0-9]{13}-[0-9a-f]{16}$/;
@@ -36,6 +39,14 @@ function assertPrepareEnding({ json, plain }, { operation, agpCode, proxyCode, e
 	const facts = plainFacts(plain.stdout);
 	assert.match(facts.invocation, INVOCATION);
 	assert.equal(plain.stdout, `ending: not-delivered\noperation: ${operation}\ninvocation: ${facts.invocation}\nagpCode: ${agpCode ?? "null"}\nproxyCode: ${proxyCode ?? "null"}\nearlierAttemptsUncertain: ${earlierAttemptsUncertain}\n`);
+}
+
+/** Asserts that prepare settled at or before its deadline, on the clock port, in both forms, as the case's premise says. */
+function assertSettledBeforeDeadline({ json, plain }) {
+	for (const result of [json, plain]) {
+		const prepare = only(result, "prepare");
+		assert.ok(only(result, "prepare-settled").at <= prepare.deadline, `settled at ${only(result, "prepare-settled").at}, at or before the deadline ${prepare.deadline}`);
+	}
 }
 
 describe("OC3 - preparing with the deadline on the injected clock port", { concurrency: 4 }, () => {
@@ -71,11 +82,15 @@ describe("OC3 - preparing with the deadline on the injected clock port", { concu
 	});
 
 	test("prepare settling not delivered with an agpCode, before the deadline, is printed whole with its operation and invocation, run never called", async () => {
-		assertPrepareEnding(await bothForms(["read", "--name", "a"], { prepare: { settle: { ending: "not-delivered", agpCode: "NO_ROUTE", proxyCode: null } }, run: answered }), { operation: "read", agpCode: "NO_ROUTE", proxyCode: null });
+		const both = await bothForms(["read", "--name", "a"], { prepare: { settle: { ending: "not-delivered", agpCode: "NO_ROUTE", proxyCode: null } }, run: answered });
+		assertSettledBeforeDeadline(both);
+		assertPrepareEnding(both, { operation: "read", agpCode: "NO_ROUTE", proxyCode: null });
 	});
 
 	test("prepare settling not delivered with a proxyCode, before the deadline, is printed whole", async () => {
-		assertPrepareEnding(await bothForms(["publish", "--name", "a", "--summary", "s"], { prepare: { settle: { ending: "not-delivered", proxyCode: "key-mismatch" }, afterCallMs: 10 }, run: answered }), { operation: "create", agpCode: null, proxyCode: "key-mismatch" });
+		const both = await bothForms(["publish", "--name", "a", "--summary", "s"], { prepare: { settle: { ending: "not-delivered", proxyCode: "key-mismatch" }, afterCallMs: 10 }, run: answered });
+		assertSettledBeforeDeadline(both);
+		assertPrepareEnding(both, { operation: "create", agpCode: null, proxyCode: "key-mismatch" });
 	});
 
 	test("prepare settling not delivered after the deadline, with an agpCode and with a proxyCode: the command waits for it, keeping no timer that ends it sooner", async () => {
@@ -103,6 +118,56 @@ describe("OC3 - preparing with the deadline on the injected clock port", { concu
 			const both = await bothForms(["read", "--name", "a"], { prepare: { settle }, run: answered });
 			assertPrepareEnding(both, { operation: "read", agpCode: null, proxyCode: null });
 			for (const result of [both.json, both.plain]) assert.match(result.stderr, /^diagnostic: prepare settled to [^\n]*, neither ready nor a not-delivered ending\n$/);
+		}
+	});
+
+	test("a prepare result that cannot be read - a thenable, a throwing getter on it, a rejected inner promise - ends the command not delivered with null codes and one diagnostic line, run never called, through the process adapter", async () => {
+		for (const [malformed, diagnostic] of [
+			["throwing-ending", "prepare settled to what could not be read: Error: the ending getter threw"],
+			["throwing-code", "prepare settled to what could not be read: Error: the code getter threw"],
+			["throwing-then", "prepare failed: Error: the then getter threw"],
+			["thenable-throws", "prepare failed: Error: then threw"],
+			["thenable-throwing-ending", "prepare settled to what could not be read: Error: the settled ending getter threw"],
+			["thenable-rejected-inner", "prepare failed: Error: the inner promise rejected"],
+			["rejected-code", "prepare settled to {\"ending\":\"not-delivered\",\"agpCode\":{},\"proxyCode\":null,\"earlierAttemptsUncertain\":false}, neither ready nor a not-delivered ending"],
+			["bigint-answer", "prepare settled to [object Object], neither ready nor a not-delivered ending"],
+			["cyclic-answer", "prepare settled to [object Object], neither ready nor a not-delivered ending"],
+		]) {
+			const both = await bothForms(["read", "--name", "a"], { prepare: { malformed }, run: answered });
+			assertPrepareEnding(both, { operation: "read", agpCode: null, proxyCode: null });
+			for (const result of [both.json, both.plain]) assert.deepEqual([result.signal, result.stderr], [null, `diagnostic: ${diagnostic}\n`], malformed);
+		}
+	});
+
+	test("reading a malformed prepare result lets no rejection escape and observes every promise it holds, a result settling after the interruption that ended the command included", async () => {
+		const escaped = [];
+		const onRejection = (reason) => escaped.push(reason);
+		process.on("unhandledRejection", onRejection);
+		try {
+			for (const malformed of Object.keys(MALFORMED)) {
+				let runs = 0;
+				const decl = fixtureDeclaration({});
+				decl.client = { prepare: () => MALFORMED[malformed]() };
+				decl.commands = decl.commands.map((c) => c.local ? c : { ...c, run: () => { runs++; return { ending: "answered", answer: 1 }; } });
+				const out = [];
+				const err = [];
+				const status = await within(declareProgram(decl).run({ args: ["read", "--name", "a", "--json"], env: BASE_ENV, stdout: (t) => out.push(t), stderr: (t) => err.push(t) }), malformed);
+				assert.deepEqual([status, runs, JSON.parse(out.join("")).ending, err.length], [3, 0, "not-delivered", 1], malformed);
+				// Interrupted while preparing, then prepare settles to the malformed result: still nothing escapes.
+				let settle;
+				decl.client = { prepare: () => new Promise((resolve) => { settle = resolve; }) };
+				const listeners = new Set();
+				const interrupted = declareProgram(decl).run({ args: ["read", "--name", "a", "--json"], env: BASE_ENV, stdout: () => assert.fail("nothing on standard output"), stderr: () => undefined, interruptions: { subscribe: (l) => { listeners.add(l); return () => listeners.delete(l); } } });
+				await sleep(5);
+				for (const l of [...listeners]) l();
+				assert.equal(await within(interrupted, malformed), 1);
+				settle(MALFORMED[malformed]());
+				assert.equal(runs, 0);
+			}
+			await sleep(50);
+			assert.deepEqual(escaped, [], "no unhandled rejection");
+		} finally {
+			process.off("unhandledRejection", onRejection);
 		}
 	});
 

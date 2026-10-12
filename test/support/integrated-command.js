@@ -5,7 +5,8 @@
 // half. The client's prepare builds and starts the nodes and waits, within its deadline, until every route
 // is ready; each command's run builds its input from its flags and invokes through the caller. Every request
 // an operation receives is recorded - node, service, operation, input, invocation, attempt and the principal
-// the host's evidence names - in the scenario's record file, with what the client was given.
+// the host's evidence names - in the scenario's record file, with what the client was given. A scenario may
+// hold standard output until the process received the signals it names (held-write.js).
 import { createNode } from "@agp/node";
 import { createLoopbackFabric } from "@agp/transport-loopback";
 import { createCaller, createOperationHost } from "@apnex/operation-call";
@@ -13,9 +14,11 @@ import { declareProgram } from "@apnex/operation-command";
 import { runProcess } from "@apnex/operation-command/process";
 import { untilOnClock } from "./clock-timer.js";
 import { recorder } from "./fixture-program.js";
+import { holdStdoutUntilSignals } from "./held-write.js";
 
 const scenario = JSON.parse(process.env.OC_FIXTURE_SCENARIO ?? "{}");
 const record = recorder(scenario.record);
+if (scenario.holdWrite !== undefined) holdStdoutUntilSignals(scenario.holdWrite, record);
 const NAME = "^[a-z0-9][a-z0-9.-]{0,62}$";
 const SERVICES = ["store", "other"];
 const OPERATIONS = ["create", "read", "find"];
@@ -138,6 +141,17 @@ const declaration = {
 			run: runWith((f) => ({ ...(f.name === undefined ? { id: f.id } : { name: f.name }), ...common(f) })) },
 		{ name: "find", operation: "find", changes: false, flags: [{ flag: "--tag", repeats: true, type: tag }],
 			run: runWith((f, page) => ({ tags: f.tag ?? [], page, ...common(f) }), 2) },
+		// Every kind of usage error on the real path (E19): flags that exclude and require others of the command's
+		// own, a group of which at least one must be given, a whole number and a URL.
+		{ name: "label", operation: "create", changes: true, flags: [
+			{ flag: "--name", required: true, type: { kind: "string", pattern: NAME } },
+			{ flag: "--tag", repeats: true, excludes: ["--clear"], type: tag },
+			{ flag: "--clear", excludes: ["--tag"], type: { kind: "switch" } },
+			{ flag: "--priority", type: { kind: "integer", min: 1, max: 5 } },
+			{ flag: "--force", requires: ["--priority"], type: { kind: "switch" } },
+			{ flag: "--link", type: { kind: "url", schemes: ["https"] } },
+		], groups: [{ atLeastOne: ["--tag", "--clear"] }],
+			run: runWith((f) => ({ name: f.name, tags: f.tag ?? [], clear: f.clear, priority: f.priority ?? null, force: f.force, link: f.link ?? null, ...common(f) })) },
 	],
 	client,
 	callBound: "--timeout",

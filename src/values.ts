@@ -36,6 +36,9 @@ export type ReadValue = { readonly ok: true; readonly value: string | number } |
 /** A type made ready to read values: its pattern compiled and its duration bounds in milliseconds. */
 export interface PreparedType {
 	readonly kind: ValueType["kind"];
+	/** A duration's or a whole number's bounds, in milliseconds for a duration; undefined for any other type. */
+	readonly min?: number;
+	readonly max?: number;
 	/** Reads a value's text as this type; never called for a switch. */
 	read(text: string): ReadValue;
 }
@@ -51,7 +54,7 @@ export function prepareType(type: ValueType): PreparedType {
 		case "integer": {
 			const { min, max } = type;
 			return {
-				kind: "integer",
+				kind: "integer", min, max,
 				read(text) {
 					if (!INTEGER_PATTERN.test(text)) return { ok: false, why: "is not a whole number" };
 					const value = Number(text);
@@ -64,7 +67,7 @@ export function prepareType(type: ValueType): PreparedType {
 			const min = durationMs(type.min) as number;
 			const max = durationMs(type.max) as number;
 			return {
-				kind: "duration",
+				kind: "duration", min, max,
 				read(text) {
 					const value = durationMs(text);
 					if (value === undefined) return { ok: false, why: "is not a duration: a whole number with no sign followed by ms, s, m, h or d" };

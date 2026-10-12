@@ -135,7 +135,8 @@ function checkType(type: unknown, what: string): PreparedType {
 			onlyFields(type, ["kind", "min", "max"], `${what}'s type`);
 			const min = typeof type["min"] === "string" ? durationMs(type["min"]) : undefined;
 			const max = typeof type["max"] === "string" ? durationMs(type["max"]) : undefined;
-			if (min === undefined || max === undefined || min > max) fail("value-type", `${what} is a duration, whose type states its bounds min and max, each a duration such as 1ms or 24h, min no more than max`);
+			// Each bound a whole number of milliseconds held exactly, so the range compared is the range declared.
+			if (min === undefined || max === undefined || !Number.isSafeInteger(min) || !Number.isSafeInteger(max) || min > max) fail("value-type", `${what} is a duration, whose type states its bounds min and max, each a duration such as 1ms or 24h of no more than ${Number.MAX_SAFE_INTEGER} milliseconds, min no more than max`);
 			break;
 		}
 		case "url": {
@@ -161,8 +162,12 @@ function checkFlag(part: unknown, what: string, setting: boolean): Omit<Compiled
 	const name = `${setting ? "the setting" : "the flag"} ${flag as string}`;
 	if (flag === INVOCATION_FLAG) fail("invocation-reserved", `${INVOCATION_FLAG} is operation-command's own flag, offered by every command that is not local, and no flag of the application's`);
 	if (flag === JSON_FLAG) fail("json-reserved", `${JSON_FLAG} is operation-command's own switch, offered by every command that is not local, and no flag of the application's`);
-	if (setting) onlyFields(part, ["flag", "type", "required", "repeats", "excludes", "requires", "description", "variable", "default", "secret"], name);
-	else {
+	if (setting) {
+		// Relations are among a command's own flags only (OC1): a setting's variable and default would make its
+		// repeat, which writes every setting that took a value (OC5), break a relation the first run kept.
+		for (const key of ["excludes", "requires"]) if (part[key] !== undefined) fail("flag-relation", `${name} declares ${key}, but a setting excludes and requires nothing: only a command's own flag may exclude or require another of that command's own flags`);
+		onlyFields(part, ["flag", "type", "required", "repeats", "description", "variable", "default", "secret"], name);
+	} else {
 		for (const key of ["variable", "default", "secret"]) if (part[key] !== undefined) fail("command-flag-form", `${name} is a command's own flag, which takes no variable, no default and no secret; only a setting does`);
 		onlyFields(part, ["flag", "type", "required", "repeats", "excludes", "requires", "description"], name);
 	}
@@ -197,12 +202,12 @@ function checkFlag(part: unknown, what: string, setting: boolean): Omit<Compiled
 	};
 }
 
-/** Checks that each flag's relations name other flags of its own scope. */
+/** Checks that each of a command's own flags excludes or requires only others of that command's own flags, never a setting. */
 function checkRelations(flags: readonly CompiledFlag[], scope: string): void {
 	const names = new Set(flags.map((f) => f.flag));
 	for (const f of flags) {
 		for (const other of [...f.excludes, ...f.requires]) {
-			if (other === f.flag || !names.has(other)) fail("flag-relation", `${f.flag} excludes or requires ${quote(other)}, which is not another of ${scope}`);
+			if (other === f.flag || !names.has(other)) fail("flag-relation", `${f.flag} excludes or requires ${quote(other)}, which is not another of ${scope}; a flag relates only to its command's own flags, never to a setting`);
 		}
 	}
 }
@@ -266,9 +271,9 @@ function callSetting(flag: unknown, settings: readonly CompiledFlag[], which: st
 	if (setting.type.kind !== "duration" || setting.repeats || !(setting.required || setting.defaultText !== undefined)) {
 		fail("call-settings", `${setting.flag}, giving ${which}, is a duration setting given once that always takes a value, being required or having a default`);
 	}
-	const read = (bound: number): boolean => setting.type.read(`${bound}ms`).ok;
-	// Its smallest and largest values lie within the range: probing the range's ends and just beyond them.
-	if ((range[0] > 0 && read(range[0] - 1)) || read(range[1] + 1)) fail("call-settings", `${setting.flag}, giving ${which}, may take only values from ${range[0]} to ${range[1]} milliseconds`);
+	// Its declared range lies wholly within the permitted one: its lower bound and its upper bound each checked.
+	const { min, max } = setting.type as { readonly min: number; readonly max: number };
+	if (min < range[0] || max > range[1]) fail("call-settings", `${setting.flag}, giving ${which}, declares the range ${min} to ${max} milliseconds, which does not lie within ${range[0]} to ${range[1]} milliseconds`);
 	return setting.key;
 }
 
@@ -293,7 +298,6 @@ export function compileProgram(declaration: ProgramDeclaration<object>): Compile
 		}
 		settings.push(setting);
 	}
-	checkRelations(settings, "the settings");
 	const commands = new Map<string, CompiledCommand>();
 	for (const c of declaration.commands as readonly CommandDeclaration<object>[]) {
 		const command = checkCommand(c, settings);
@@ -305,7 +309,7 @@ export function compileProgram(declaration: ProgramDeclaration<object>): Compile
 	let prepareTime: string | undefined;
 	if (invokes) {
 		callBound = callSetting(declaration.callBound, settings, "the call's bound", [1, MAX_BOUND_MS]);
-		prepareTime = callSetting(declaration.prepareTime, settings, "the time to prepare", [0, Number.POSITIVE_INFINITY]);
+		prepareTime = callSetting(declaration.prepareTime, settings, "the time to prepare", [0, MAX_BOUND_MS]);
 	} else if (declaration.callBound !== undefined || declaration.prepareTime !== undefined) {
 		fail("call-settings", "a program whose every command is local names no setting for a call's bound or its time to prepare");
 	}

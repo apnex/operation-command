@@ -160,10 +160,22 @@ describe("OC7 - interruptions through the real call layer, as real signals", { c
 		assert.deepEqual(JSON.parse(r.stdout), { ending: "answered", operation: "read", invocation: got.invocation, answer: { node: "host-a", service: "store", operation: "read", input: got.input } });
 	});
 
-	test("after the ending: the call layer's ending, unchanged", async () => {
-		const r = await run(["read", "--name", "a", "--json"], { scenario: { selfSignal: "SIGINT" } });
-		assert.deepEqual([r.status, r.signal, r.stderr], [0, null, ""]);
-		assert.equal(JSON.parse(r.stdout).answer.operation, "read");
+	test("after the ending, and during its printing: the call layer's ending, unchanged, each signal received before the process exits", async () => {
+		for (const [args, scenario, signal] of [
+			[["read", "--name", "a", "--json"], { selfSignal: "SIGINT", holdWrite: { until: ["SIGINT"] } }, "SIGINT"],
+			[["read", "--name", "a"], { holdWrite: { until: ["SIGTERM"], duringWrite: "SIGTERM" } }, "SIGTERM"],
+		]) {
+			const r = await run(args, { scenario });
+			assert.deepEqual([r.status, r.signal, r.stderr], [0, null, ""]);
+			const got = only(received(r), "request");
+			const answer = { node: "host-a", service: "store", operation: "read", input: got.input };
+			if (args.includes("--json")) assert.deepEqual(JSON.parse(r.stdout), { ending: "answered", operation: "read", invocation: got.invocation, answer });
+			else assert.equal(r.stdout, `ending: answered\noperation: read\ninvocation: ${got.invocation}\nanswer: ${JSON.stringify(answer)}\n`);
+			const receipt = only(r.records.filter((x) => x.event === "signal-received"), "receipt");
+			assert.deepEqual([receipt.signal, receipt.listeners], [signal, 2], "received with the process adapter's handler among its listeners");
+			assert.ok(r.records.findIndex((x) => x.event === "signal-received") < r.records.findIndex((x) => x.event === "write-released"), "received before the ending was released to standard output");
+			if (scenario.holdWrite.duringWrite) assert.ok(r.records.findIndex((x) => x.event === "write-held") < r.records.findIndex((x) => x.event === "signal-received"), "received while the ending was being written");
+		}
 	});
 });
 
@@ -176,12 +188,50 @@ describe("OC7 - reading and preparing on the real path (E19)", { concurrency: 3 
 		assert.deepEqual([flag, variable, defaulted].map((r) => { const g = only(received(r), "request"); return [g.node, g.service]; }), [["host-a", "other"], ["host-b", "other"], ["host-a", "store"]]);
 	});
 
-	test("a usage error, a group's included, exits 1 with nothing prepared or invoked", async () => {
-		for (const args of [["read"], ["read", "--name", "a", "--id", "0123abcd"], ["publish", "--name", "a"], ["read", "--name", "a", "--timeout", "0ms", "--json"]]) {
-			const r = await run(args);
-			assert.deepEqual([r.status, r.stdout], [1, ""]);
-			assert.match(r.stderr, /^usage: [^\n]+\n$/);
-			assert.deepEqual(r.records, [], "neither prepare, run nor the operation was reached");
+	test("each kind of usage error, groups with none and too many included, exits 1 with one line on standard error and nothing on standard output, the kinds alternating with --json and without, nothing prepared or invoked", async () => {
+		const cases = [
+			[[], /^usage: no command was given; the commands are publish, read, find, label\n$/],
+			[["unpublish"], /^usage: unknown command "unpublish"/],
+			[["read", "--name", "a", "--colour", "red"], /^usage: unknown flag "--colour" for the command read\n$/],
+			[["read", "a"], /^usage: unexpected argument "a" to the command read/],
+			[["read", "--name"], /^usage: the flag --name has no value\n$/],
+			[["read", "--name", "a", "--verbose=yes"], /^usage: the switch --verbose takes no value, and was given "yes"\n$/],
+			[["read", "--name", "a", "--json=yes"], /^usage: the switch --json takes no value, and was given "yes"\n$/],
+			[["read", "--name", "a", "--name", "b"], /^usage: the flag --name was given twice and may not repeat\n$/],
+			[["read", "--name", "a"], /^usage: the flag --identity, or its variable FIX_IDENTITY, is required\n$/, { FIX_HOST: "host-a", FIX_IDENTITY: "" }],
+			[["publish", "--name", "a"], /^usage: the flag --summary is required by the command publish\n$/],
+			[["read", "--id", "0123abcdx"], /^usage: the value "0123abcdx" of --id does not match the pattern/],
+			[["read", "--name", "a", "--timeout", "10"], /^usage: the value "10" of --timeout is not a duration/],
+			[["read", "--name", "a"], /^usage: the value "1y" of the variable FIX_TIMEOUT, standing in for --timeout, is not a duration/, { ...ENV, FIX_TIMEOUT: "1y" }],
+			[["read", "--name", "a", "--timeout", "0ms"], /^usage: the value "0ms" of --timeout is not a duration from 1ms to 24h\n$/],
+			[["label", "--name", "a", "--tag", "k:v", "--priority", "two"], /^usage: the value "two" of --priority is not a whole number\n$/],
+			[["label", "--name", "a", "--tag", "k:v", "--priority", "6"], /^usage: the value "6" of --priority is not a whole number from 1 to 5\n$/],
+			[["label", "--name", "a", "--tag", "k:v", "--link", "http://x.test/"], /^usage: the value "http:\/\/x.test\/" of --link is not a URL of the scheme https\n$/],
+			[["label", "--name", "a", "--tag", "k:v", "--clear"], /^usage: the flags --tag and --clear exclude each other\n$/],
+			[["label", "--name", "a", "--clear", "--force"], /^usage: the flag --force requires --priority, which was not given\n$/],
+			[["label", "--name", "a"], /^usage: the command label needs at least one of --tag, --clear, and was given none\n$/],
+			[["read"], /^usage: the command read needs exactly one of --name, --id, and was given none\n$/],
+			[["read", "--name", "a", "--id", "0123abcd"], /^usage: the command read needs exactly one of --name, --id, and was given 2\n$/],
+			[["publish", "--name", "a", "--summary", "s", "--invocation", "123"], /^usage: the value "123" of --invocation is not an invocation identity/],
+		];
+		// The kinds alternate between the two forms, so each form meets usage errors of every sort on the real path.
+		const runs = cases.map(([args, says, env = ENV], i) => ({ args: i % 2 === 1 ? [args[0], "--json", ...args.slice(1)] : args, says, env }));
+		// Four commands at a time, each its own process, so the matrix does not wait on each start in turn.
+		const pending = [...runs];
+		await Promise.all(Array.from({ length: 4 }, async () => {
+			for (let next = pending.shift(); next !== undefined; next = pending.shift()) {
+				const r = await run(next.args, { env: next.env });
+				assert.deepEqual([r.status, r.signal, r.stdout], [1, null, ""], `${next.args.join(" ")}: ${r.stderr}`);
+				assert.match(r.stderr, next.says);
+				assert.match(r.stderr, /^usage: [^\n]+\n$/, "one line on standard error");
+				assert.deepEqual(r.records, [], "neither prepare, run nor the operation was reached");
+			}
+		}));
+		// Each group with one, and the at-least-one group with two, its relations kept, reaches the operation on the real path.
+		for (const args of [["label", "--name", "a", "--clear"], ["label", "--name", "a", "--tag", "k:v", "--tag", "a:b", "--priority", "2", "--force", "--link", "https://x.test/"], ["read", "--id", "0123abcd"]]) {
+			const r = await run([...args, "--json"]);
+			assert.equal(r.status, 0, r.stderr);
+			assert.equal(received(r).length, 1);
 		}
 	});
 

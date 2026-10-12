@@ -140,6 +140,18 @@ describe("OC5 - repeating an unknown ending", { concurrency: 3 }, () => {
 		assert.equal((await shellWords(line)).filter((w) => w === "--invocation").length, 1);
 	});
 
+	test("a command whose own flags exclude and require others repeats keeping every relation its first run kept, settings from flags, variables and defaults included, in a changed environment", async () => {
+		const env = { ...BASE_ENV, FIX_SERVICE: "from-var", FIX_RETRIES: "7" };
+		const changed = { FIX_HOST: "host-z", FIX_IDENTITY: "zed", FIX_SERVICE: "other", FIX_RETRIES: "1", FIX_TIMEOUT: "1h", FIX_URL: "wss://elsewhere.test/x" };
+		// --force requires --expect-revision, given; --tag excludes --no-tags, not given.
+		const kept = await roundTrip(["update", "--name", "a", "--tag", "k:v", "--force", "--expect-revision", "3", "--verbose", "--timeout", "2s"], { env, changed, changes: true });
+		assert.deepEqual(kept.array.slice(kept.array.indexOf("--json") + 1, -2), ["--name", "a", "--tag", "k:v", "--force", "--expect-revision", "3"]);
+		for (const run of [kept.again, kept.shell]) assert.deepEqual([runOf(run).flags.force, runOf(run).flags["expect-revision"], runOf(run).flags.tag], [true, 3, ["k:v"]]);
+		// --no-tags excludes --tag, and the switch --force is off: the repeat reads none of them given.
+		const other = await roundTrip(["update", "--id", "0123abcd", "--no-tags"], { env, changed, changes: true });
+		for (const run of [other.again, other.shell]) assert.deepEqual([runOf(run).flags["no-tags"], runOf(run).flags.force, "tag" in runOf(run).flags], [true, false, false]);
+	});
+
 	test("a command that changes nothing repeats as a fresh run", async () => {
 		const { array } = await roundTrip(["find", "--tag", "k:v", "--limit", "5"], { changes: false });
 		assert.deepEqual(array.slice(-5), ["--json", "--tag", "k:v", "--limit", "5"]);

@@ -17,8 +17,8 @@ export type ValueType =
 	/** A switch: given alone, it is on; not given, it is off. */
 	| { readonly kind: "switch" };
 
-/** A flag of a command, or the flag of a setting (OC1). */
-export interface FlagDeclaration {
+/** What a command's own flag and a setting share (OC1). */
+export interface FlagParts {
 	/** The flag as written: `--` and a name of lowercase letters, digits and hyphens. */
 	readonly flag: string;
 	readonly type: ValueType;
@@ -26,16 +26,20 @@ export interface FlagDeclaration {
 	readonly required?: boolean;
 	/** The flag may be given more than once, each value kept in order. */
 	readonly repeats?: boolean;
-	/** Flags, in the same scope, that may not be given with this one. */
-	readonly excludes?: readonly string[];
-	/** Flags, in the same scope, that must be given when this one is. */
-	readonly requires?: readonly string[];
 	/** The application's words for the flag, kept for the reference outside Delta 1 (OC6). */
 	readonly description?: string;
 }
 
-/** A setting, offered by every command (OC1). */
-export interface SettingDeclaration extends FlagDeclaration {
+/** A command's own flag (OC1). */
+export interface FlagDeclaration extends FlagParts {
+	/** Others of the command's own flags that may not be given with this one; never a setting. */
+	readonly excludes?: readonly string[];
+	/** Others of the command's own flags that must be given when this one is; never a setting. */
+	readonly requires?: readonly string[];
+}
+
+/** A setting, offered by every command (OC1); it excludes and requires nothing, so a repeat keeps every relation (OC5). */
+export interface SettingDeclaration extends FlagParts {
 	/** The environment variable standing in for the flag; a setting with one is required or has a default. */
 	readonly variable?: string;
 	/** The default, written as text as it would be given to the flag. */
