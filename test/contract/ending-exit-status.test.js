@@ -7,8 +7,9 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { declareProgram, EXIT_STATUS, INTERRUPTED_LINE } from "@apnex/operation-command";
 import { sleep, within } from "../support/clock-timer.js";
-import { fixtureDeclaration, MALFORMED } from "../support/fixture-program.js";
+import { CYCLIC_ERRORS, fixtureDeclaration, MALFORMED } from "../support/fixture-program.js";
 import { BASE_ENV, plainFacts, runFixture, startFixture } from "../support/run-command.js";
+import { ADDRESS, DATA_FORMS, dataEnding, oneGetterEnding, GETTER_FORMS, gettersEnding, KIND_FIELDS, OTHER_KIND_FIELD } from "../support/structural-ending.js";
 
 const INVOCATION = /^[0-9]{13}-[0-9a-f]{16}$/;
 const REFUSAL = { part: "store", code: "input-misfit", what: "The input does not fit.", why: "A name is required.", fix: "Give a name.", details: { field: "name" }, misfits: [{ pointer: "/name", keyword: "required", expected: "a name", fit: "add it" }] };
@@ -51,8 +52,8 @@ describe("OC4 - each ending's status, its JSON object whole and its plain form",
 	test("a word that throws, or returns what is no text, a promise included: the plain form writes answer: and the answer's JSON, with one diagnostic line, status 0; what it threw is never the wording", async () => {
 		const answer = { safe: true, said: "it's" };
 		for (const [word, why] of [
-			["throws-string", "word threw word failed"], ["throws-error", "word threw Error: word broke"], ["returns-number", "word returned a number, not text"],
-			["returns-object", "word returned an object, not text"], ["returns-rejecting-promise", "word returned a promise, not text"], ["returns-resolving-promise", "word returned a promise, not text"],
+			["throws-string", "word threw word failed"], ["throws-error", "word threw Error: word broke"], ["returns-number", "word returned 42, not text"],
+			["returns-object", "word returned <an object>, not text"], ["returns-rejecting-promise", "word returned <a promise>, not text"], ["returns-resolving-promise", "word returned <a promise>, not text"],
 			["throws-rejecting-promise", "word threw <a promise>"],
 		]) {
 			const { json, plain } = await ended({ ending: "answered", answer }, { word });
@@ -72,7 +73,7 @@ describe("OC4 - each ending's status, its JSON object whole and its plain form",
 			const err = [];
 			const status = await declareProgram(decl).run({ args: BASE, env: BASE_ENV, stdout: (t) => out.push(t), stderr: (t) => err.push(t) });
 			await sleep(50);
-			assert.deepEqual([status, err], [0, ["diagnostic: the answer could not be worded, so it is printed as JSON: word returned a promise, not text\n"]]);
+			assert.deepEqual([status, err], [0, ["diagnostic: the answer could not be worded, so it is printed as JSON: word returned <a promise>, not text\n"]]);
 			assert.ok(out.join("").endsWith('answer: {"a":1}\n'));
 			assert.deepEqual(escaped, [], "no unhandled rejection");
 		} finally {
@@ -160,7 +161,7 @@ describe("OC4 - each ending's status, its JSON object whole and its plain form",
 
 	test("a run whose result cannot be read as an ending - a thenable, a throwing getter on it, a rejected inner promise, no JSON - ends unknown with run-failed, its repeat and one diagnostic line, through the process adapter", async () => {
 		for (const [malformed, why] of [
-			["bigint-answer", "run returned an answered ending whose answer is no JSON value: answer is a BigInt, not a JSON value"],
+			["bigint-answer", "run returned an answered ending whose answer is no JSON value: answer is 1n"],
 			["cyclic-answer", "run returned an answered ending whose answer is no JSON value: answer.self holds itself"],
 			["throwing-ending", "run returned what could not be read as an ending: Error: the ending getter threw"],
 			["throwing-answer", "run returned what could not be read as an ending: Error: the answer getter threw"],
@@ -169,7 +170,7 @@ describe("OC4 - each ending's status, its JSON object whole and its plain form",
 			["thenable-throws", "run failed: Error: then threw"],
 			["thenable-throwing-ending", "run returned what could not be read as an ending: Error: the settled ending getter threw"],
 			["thenable-rejected-inner", "run failed: Error: the inner promise rejected"],
-			["rejected-answer", "run returned an answered ending whose answer is no JSON value: answer is an object that is no plain JSON object"],
+			["rejected-answer", "run returned an answered ending whose answer is no JSON value: answer is <a promise>"],
 			["rejected-code", "run returned a not-delivered ending without agpCode, proxyCode and earlierAttemptsUncertain"],
 			["first-read-rejected-code", "run returned a not-delivered ending without agpCode, proxyCode and earlierAttemptsUncertain"],
 			["throwing-rejected-code", "run returned what could not be read as an ending: <a promise>"],
@@ -410,5 +411,168 @@ describe("OC4 - interruptions at exact moments, through an injected interruption
 		await sleep(20);
 		assert.equal(runs, 0);
 		assert.deepEqual([out, err], [[], [`${INTERRUPTED_LINE}\n`]]);
+	});
+});
+
+const SETTINGS = ["--host", "host-a", "--service", "store", "--url", "ws://127.0.0.1:47100/agp", "--identity", "alice", "--timeout", "10s", "--connect-timeout", "5s", "--retries", "3"];
+const COMMAND_FLAGS = ["--name", "a", "--summary", "it's \"quoted\""];
+const shellLine = (words) => words.map((w) => `'${w.replaceAll("'", "'\\''")}'`).join(" ");
+
+/** The whole output of an ending, in either form, as the command prints it under `invocation`, the answer unworded. */
+function printed(ending, json, invocation) {
+	const record = { ending: ending.ending, operation: "create", invocation };
+	for (const field of KIND_FIELDS[ending.ending]) record[field] = ending[field];
+	if (ending.ending === "unknown") record.repeat = ["publish", ...SETTINGS, ...(json ? ["--json"] : []), ...COMMAND_FLAGS, "--invocation", invocation];
+	if (json) return `${JSON.stringify(record)}\n`;
+	return `${Object.entries(record).map(([name, value]) => name === "repeat" ? `repeat: ${shellLine(["fixture", ...value])}` : `${name}: ${typeof value === "string" ? value : JSON.stringify(value)}`).join("\n")}\n`;
+}
+
+/** Runs publish in this process, with --json and without, run returning what `make` makes afresh for each, the answer unworded. */
+async function returnedInProcess(make) {
+	const results = [];
+	for (const json of [true, false]) {
+		const made = make();
+		const decl = fixtureDeclaration({ plainAnswer: true });
+		decl.commands = decl.commands.map((c) => c.local ? c : { ...c, run: () => made.value });
+		const out = [];
+		const err = [];
+		const status = await within(declareProgram(decl).run({ args: [...BASE, ...(json ? ["--json"] : [])], env: BASE_ENV, stdout: (t) => out.push(t), stderr: (t) => err.push(t) }), "the command's status");
+		const stdout = out.join("");
+		results.push({ json, status, stdout, stderr: err.join(""), made, invocation: json ? JSON.parse(stdout).invocation : plainFacts(stdout).invocation });
+	}
+	return results;
+}
+
+/** Collects unhandled rejections while `body` runs, and a little after. */
+async function noRejectionEscapes(body) {
+	const escaped = [];
+	const onRejection = (reason) => escaped.push(reason);
+	process.on("unhandledRejection", onRejection);
+	try {
+		await body();
+		await sleep(50);
+	} finally {
+		process.off("unhandledRejection", onRejection);
+	}
+	assert.deepEqual(escaped, [], "no unhandled rejection");
+}
+
+/** A diagnostic line as OC4 cuts it: at 1000 characters, with ... added. */
+const cut = (line) => line.length > 1000 ? `${line.slice(0, 1000)}...` : line;
+
+const PAYLOAD = '{"__proto__":{"ok":"from-proto","kept":true},"nested":{"__proto__":"text","list":[{"__proto__":{"deeper":1}}]},"safe":1}';
+/** One ending of each kind, its answer or refusal holding own __proto__ members, nested too, as JSON text gives them. */
+const KINDS = () => [
+	[{ ending: "answered", answer: JSON.parse(PAYLOAD) }, 0],
+	[{ ending: "refused", refusal: { ...REFUSAL, details: JSON.parse(PAYLOAD) } }, 2],
+	[{ ending: "not-delivered", agpCode: "NO_ROUTE", proxyCode: null, earlierAttemptsUncertain: true }, 3],
+	[{ ending: "unknown", reason: "bound-passed", agpCode: null, deliveryReport: "delivered" }, 4],
+];
+
+describe("OC4 - an ending read by its declared fields, whatever its prototype; a diagnostic that always ends", { concurrency: 4 }, () => {
+	test("each of the four endings with a custom prototype, inherited and non-enumerable fields and getters, an extra field and another kind's field: each declared field read once, the rest untouched, printed whole with its status in both forms, every member of an answer or refusal kept, a nested __proto__ included", async () => {
+		for (const [ending, status] of KINDS()) {
+			const fields = { ...ending, ...ADDRESS };
+			const untouched = ["extra", OTHER_KIND_FIELD[ending.ending]];
+			for (const form of GETTER_FORMS) {
+				for (const r of await returnedInProcess(() => gettersEnding(fields, form, untouched))) {
+					assert.deepEqual([r.status, r.stderr], [status, ""], `${ending.ending} ${form}`);
+					assert.equal(r.stdout, printed(ending, r.json, r.invocation), `${ending.ending} ${form} ${r.json ? "--json" : "plain"}`);
+					const once = Object.fromEntries(["ending", "invocation", "attempt", "operation", ...KIND_FIELDS[ending.ending]].map((name) => [name, 1]));
+					assert.deepEqual(r.made.reads, once, `${ending.ending} ${form}: ending, its address and its kind's fields, each read once`);
+					assert.deepEqual(r.made.touched, [], `${ending.ending} ${form}: an extra field and another kind's field untouched`);
+				}
+			}
+			for (const form of DATA_FORMS) {
+				for (const r of await returnedInProcess(() => ({ value: dataEnding(fields, form) }))) {
+					assert.deepEqual([r.status, r.stderr], [status, ""], `${ending.ending} ${form}`);
+					assert.equal(r.stdout, printed(ending, r.json, r.invocation), `${ending.ending} ${form} ${r.json ? "--json" : "plain"}`);
+				}
+			}
+		}
+		// The payload printed holds its own __proto__ members, never a prototype set from them.
+		const [r] = await returnedInProcess(() => ({ value: dataEnding({ ending: "answered", answer: JSON.parse(PAYLOAD), ...ADDRESS }, "class-instance") }));
+		const answer = JSON.parse(r.stdout).answer;
+		assert.ok(Object.hasOwn(answer, "__proto__") && Object.hasOwn(answer.nested, "__proto__") && Object.hasOwn(answer.nested.list[0], "__proto__"));
+	});
+
+	test("a getter that throws, or gives a promise, on an ending's fields: unknown with run-failed, its repeat and one diagnostic line, in both forms, no rejection escaping", async () => {
+		const cases = [];
+		for (const [ending] of KINDS()) {
+			const fields = { ...ending, ...ADDRESS };
+			const first = KIND_FIELDS[ending.ending][0];
+			for (const name of ["ending", "invocation", first]) cases.push([fields, name, "throws", `run returned what could not be read as an ending: Error: the ${name} getter threw`]);
+			const promised = {
+				answered: "run returned an answered ending whose answer is no JSON value: answer is <a promise>",
+				refused: "run returned a refused ending whose refusal is no JSON value: refusal is <a promise>",
+				"not-delivered": "run returned a not-delivered ending without agpCode, proxyCode and earlierAttemptsUncertain",
+				unknown: "run returned an unknown ending without reason, agpCode and deliveryReport",
+			}[ending.ending];
+			cases.push([fields, first, "promise", promised]);
+			cases.push([fields, "ending", "promise", "run returned an ending of <a promise>, not answered, refused, not-delivered or unknown"]);
+		}
+		await noRejectionEscapes(async () => {
+			for (const [fields, name, gives, diagnostic] of cases) {
+				for (const r of await returnedInProcess(() => oneGetterEnding(fields, name, gives))) {
+					assert.deepEqual([r.status, r.stderr], [4, `diagnostic: ${diagnostic}\n`], `${fields.ending}: ${name} ${gives}`);
+					assert.equal(r.stdout, printed({ ending: "unknown", reason: "run-failed", agpCode: null, deliveryReport: null }, r.json, r.invocation));
+				}
+			}
+		});
+	});
+
+	test("a diagnostic is built from values already read: an error met twice has its name and message read once, a value is never converted, and a message holding line breaks is still one line", async () => {
+		const reads = { name: 0, message: 0 };
+		const conversions = [];
+		await noRejectionEscapes(async () => {
+			for (const json of [true, false]) {
+				const inner = Object.defineProperties(new Error(), {
+					name: { get() { reads.name++; return "Inner"; } },
+					message: { get() { reads.message++; return "two\nlines"; } },
+				});
+				const outer = new Error();
+				outer.name = inner;
+				outer.message = inner;
+				const converting = new Error();
+				converting.message = { toString() { conversions.push("toString"); return "x"; }, [Symbol.toPrimitive]() { conversions.push("toPrimitive"); return "x"; } };
+				const decl = fixtureDeclaration({ plainAnswer: true });
+				let calls = 0;
+				decl.commands = decl.commands.map((c) => c.local ? c : { ...c, run: () => { throw ++calls === 1 ? outer : converting; } });
+				for (const expected of ["diagnostic: run failed: Inner: two lines: Inner: two lines\n", "diagnostic: run failed: Error: <an object>\n"]) {
+					const out = [];
+					const err = [];
+					const status = await declareProgram(decl).run({ args: [...BASE, ...(json ? ["--json"] : [])], env: BASE_ENV, stdout: (t) => out.push(t), stderr: (t) => err.push(t) });
+					const stdout = out.join("");
+					assert.deepEqual([status, err.join("")], [4, expected]);
+					assert.equal(stdout, printed({ ending: "unknown", reason: "run-failed", agpCode: null, deliveryReport: null }, json, json ? JSON.parse(stdout).invocation : plainFacts(stdout).invocation));
+				}
+			}
+		});
+		assert.deepEqual(reads, { name: 2, message: 2 }, "each error, met twice in its description, read once in each of the two runs");
+		assert.deepEqual(conversions, [], "no conversion called");
+	});
+
+	test("run and word throwing an error whose name is itself, whose message is itself, or which holds a value that holds it, and one too long for a line: the run unknown with run-failed and its repeat, the word's answer written as JSON, each with one diagnostic line, cut at 1000 characters, through the process adapter", async () => {
+		const unknown = { ending: "unknown", reason: "run-failed", agpCode: null, deliveryReport: null };
+		for (const [error, { said }] of Object.entries(CYCLIC_ERRORS)) {
+			for (const rejects of error === "long-message" ? [false] : [false, true]) {
+				const json = await runFixture([...BASE, "--json"], { env: BASE_ENV, scenario: { run: { fails: { error, rejects } } } });
+				const plain = await runFixture(BASE, { env: BASE_ENV, scenario: { plainAnswer: true, run: { fails: { error, rejects } } } });
+				const line = cut(`diagnostic: run failed: ${said}`);
+				if (error === "long-message") assert.equal(line.length, 1003, "cut at 1000 characters, ... added");
+				for (const r of [json, plain]) {
+					assert.deepEqual([r.status, r.signal, r.stderr], [4, null, `${line}\n`], `${error} ${rejects ? "rejects" : "throws"}`);
+					assert.equal(r.stdout, printed(unknown, r === json, r === json ? JSON.parse(r.stdout).invocation : plainFacts(r.stdout).invocation));
+				}
+			}
+			const answer = { safe: true };
+			const scenario = { word: `throws-${error}`, run: { ending: { ending: "answered", answer } } };
+			const plain = await runFixture(BASE, { env: BASE_ENV, scenario });
+			assert.deepEqual([plain.status, plain.signal, plain.stderr], [0, null, `${cut(`diagnostic: the answer could not be worded, so it is printed as JSON: word threw ${said}`)}\n`], `word ${error}`);
+			assert.equal(plain.stdout, printed({ ending: "answered", answer }, false, plainFacts(plain.stdout).invocation));
+			const json = await runFixture([...BASE, "--json"], { env: BASE_ENV, scenario });
+			assert.deepEqual([json.status, json.signal, json.stderr], [0, null, ""], "the JSON form does not word the answer");
+			assert.equal(json.stdout, printed({ ending: "answered", answer }, true, JSON.parse(json.stdout).invocation));
+		}
 	});
 });

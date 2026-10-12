@@ -109,6 +109,27 @@ export const MALFORMED = Object.freeze({
 	"throwing-rejected-code": () => ({ ending: "not-delivered", get agpCode() { throw Promise.reject(new Error("the code getter's thrown promise rejected")); }, proxyCode: null, earlierAttemptsUncertain: false }),
 });
 
+/**
+ * Errors whose description meets itself, one longer than a diagnostic line holds, and one whose description
+ * never meets the same value twice, each named and made afresh: one whose name is itself, one whose message is
+ * itself, one holding, as its message, an error whose name is the first, and one whose every name is a new
+ * error. Each case's description, as OC4 writes it, is beside it.
+ */
+export const CYCLIC_ERRORS = Object.freeze({
+	"name-itself": { make: () => { const error = new Error("its name is itself"); error.name = error; return error; }, said: "<cycle>: its name is itself" },
+	"message-itself": { make: () => { const error = new Error("replaced"); error.message = error; return error; }, said: "Error: <cycle>" },
+	"holds-its-holder": { make: () => { const outer = new Error("outer"); const inner = new Error("inner"); outer.message = inner; inner.name = outer; return outer; }, said: "Error: <cycle>: inner" },
+	"long-message": { make: () => new Error("m".repeat(5000)), said: `Error: ${"m".repeat(5000)}` },
+	// Each reading of its name gives a new error of its kind, so no value repeats: the description stops all the same.
+	"endless-names": { make: () => { class Endless extends Error { get name() { return new Endless("again"); } } return new Endless("first"); }, said: "..." },
+});
+
+/** Throws, or gives a rejected promise of, the named error, as a spec's `fails` says. */
+const failWith = ({ error, rejects }) => {
+	if (rejects) return Promise.reject(CYCLIC_ERRORS[error].make());
+	throw CYCLIC_ERRORS[error].make();
+};
+
 /** The wordings a scenario's `word` may name, each failing in its own way, besides the fixture's own. */
 const WORDINGS = Object.freeze({
 	"throws-string": () => { throw "word failed"; },
@@ -118,6 +139,7 @@ const WORDINGS = Object.freeze({
 	"returns-rejecting-promise": () => Promise.reject(new Error("word rejected")),
 	"returns-resolving-promise": () => Promise.resolve("too late"),
 	"throws-rejecting-promise": () => { throw Promise.reject(new Error("word's thrown promise rejected")); },
+	...Object.fromEntries(Object.keys(CYCLIC_ERRORS).map((name) => [`throws-${name}`, () => failWith({ error: name, rejects: false })])),
 });
 
 /** The fixture client's prepare, as the scenario's `prepare` says. */
@@ -135,16 +157,20 @@ function fixturePrepare(spec, record) {
 			record("prepare-settled", { at: clock.now(), malformed: spec.malformed });
 			return MALFORMED[spec.malformed]();
 		}
+		if (spec.fails !== undefined) {
+			record("prepare-settled", { at: clock.now(), fails: spec.fails });
+			return failWith(spec.fails);
+		}
 		const settle = "settle" in spec ? spec.settle : "ready";
 		record("prepare-settled", { at: clock.now(), settle });
 		return settleWith(settle);
 	};
-	if (spec.malformed === undefined || spec.untilAbort) return prepare;
-	// A malformed result given at once, as the client returned it: no async function adopts a thenable first.
+	if ((spec.malformed === undefined && spec.fails === undefined) || spec.untilAbort) return prepare;
+	// A malformed result given, or an error thrown, at once, as the client did it: no async function adopts a thenable first.
 	return (request) => {
 		record("prepare", { deadline: request.deadline, calledAt: request.clock.now(), command: request.command });
-		record("prepare-settled", { at: request.clock.now(), malformed: spec.malformed });
-		return MALFORMED[spec.malformed]();
+		record("prepare-settled", { at: request.clock.now(), ...(spec.fails === undefined ? { malformed: spec.malformed } : { fails: spec.fails }) });
+		return spec.fails === undefined ? MALFORMED[spec.malformed]() : failWith(spec.fails);
 	};
 }
 
@@ -158,9 +184,9 @@ function endingFor(spec, context, invocation) {
 /** The fixture's run for every command that invokes, as the scenario's `run` says. */
 function fixtureRun(spec, record, identities) {
 	// A malformed result is returned at once, as the client returned it: no async function adopts a thenable first.
-	if (spec.malformed !== undefined) return (context) => {
+	if (spec.malformed !== undefined || spec.fails !== undefined) return (context) => {
 		record("run", { command: context.command, operation: context.operation, flags: context.flags, bound: context.bound, invocation: context.invocation, repeat: context.repeat });
-		return MALFORMED[spec.malformed]();
+		return spec.fails === undefined ? MALFORMED[spec.malformed]() : failWith(spec.fails);
 	};
 	return async (context) => {
 		record("run", { command: context.command, operation: context.operation, flags: context.flags, bound: context.bound, invocation: context.invocation, repeat: context.repeat, signalIsAbortSignal: context.signal instanceof AbortSignal, frozen: Object.isFrozen(context) });

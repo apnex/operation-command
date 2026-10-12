@@ -72,6 +72,25 @@ describe("OC7 - each ending through the real call layer, plainly and as JSON, un
 		}
 	});
 
+	test("real answers and refusals returned by run inside an ending with a custom prototype and with a non-enumerable ending: each printed unchanged in both forms with its own status", async () => {
+		for (const envelope of ["custom-prototype", "ending-not-enumerable"]) {
+			for (const [mode, field, status] of [["answer", "answer", 0], ["refuse", "refusal", 2]]) {
+				const scenario = { envelope, operations: { read: { mode } } };
+				const json = await run(["read", "--name", "a", "--json"], { scenario });
+				const plain = await run(["read", "--name", "a"], { scenario });
+				for (const r of [json, plain]) {
+					assert.deepEqual([r.status, r.signal, r.stderr], [status, null, ""], `${envelope} ${mode} ${r === json ? "--json" : "plain"}`);
+					// The call layer's ending, as operation-call gave it over AGP, before run wrapped it.
+					const given = only(r.records.filter((x) => x.event === "call-ending"), "call-ending").ending;
+					assert.equal(given.ending, mode === "answer" ? "answered" : "refused");
+					assert.equal(given.invocation, only(received(r), "request").invocation);
+					const expected = { ending: given.ending, operation: "read", invocation: given.invocation, [field]: given[field] };
+					assert.equal(r.stdout, r === json ? `${JSON.stringify(expected)}\n` : `ending: ${given.ending}\noperation: read\ninvocation: ${given.invocation}\n${field}: ${JSON.stringify(given[field])}\n`);
+				}
+			}
+		}
+	});
+
 	test("not delivered: a host no route reaches, AGP's code unchanged, status 3, the operation never receiving it", async () => {
 		const json = await run(["publish", "--name", "a", "--summary", "s", "--host", "host-z", "--json"]);
 		assert.deepEqual([json.status, json.stderr], [3, ""]);

@@ -7,7 +7,9 @@
 // an operation receives is recorded - node, service, operation, input, invocation, attempt and the principal
 // the host's evidence names - in the scenario's record file, with what the client was given. A scenario may
 // hold standard output until the process received the signals it names (held-write.js), and name a payload
-// that its operations answer, or give as their refusal's details. The ending each run returns is recorded.
+// that its operations answer, or give as their refusal's details. The ending each run returns is recorded;
+// a scenario's `envelope` returns it inside a frozen object with a custom prototype, or a frozen plain object
+// whose `ending` is not enumerable, as the caller interface's types allow (OC4).
 import { createNode } from "@agp/node";
 import { createLoopbackFabric } from "@agp/transport-loopback";
 import { createCaller, createOperationHost } from "@apnex/operation-call";
@@ -122,6 +124,8 @@ const runWith = (input, pages = 1) => async ({ flags, bound, invocation, repeat,
 	if (scenario.selfSignal) process.kill(process.pid, scenario.selfSignal);
 	// The call layer's ending, whole, as run returns it, so a test compares the record printed with it.
 	record("call-ending", { ending });
+	if (scenario.envelope === "custom-prototype") return Object.freeze(Object.assign(Object.create({ envelope: true }), ending));
+	if (scenario.envelope === "ending-not-enumerable") return Object.freeze(Object.defineProperty({ ...ending }, "ending", { value: ending.ending, enumerable: false }));
 	return ending;
 };
 

@@ -11,12 +11,12 @@ import type { IdentitySource } from "@apnex/operation-call";
 import { isInvocationId } from "@apnex/operation-call/message-format";
 import { compileProgram, type CompiledCommand, type CompiledProgram } from "./declaration.js";
 import type { CommandClock, Flags, LocalContext, ProgramDeclaration, RunContext } from "./declaration-types.js";
-import { Odd, readOnce, settle, type Settled, type Snapshot } from "./client-value.js";
+import { isObject, readFields, settle, type Settled } from "./client-value.js";
 import { EXIT_STATUS, printEnding, readEnding, RUN_FAILED, type Ending, type Wording } from "./endings.js";
 import { readCommand, type ReadCommand } from "./reading.js";
 import { repeatArguments } from "./repeat.js";
-import { isRecord, oneLine, threwAt } from "./snapshot-text.js";
 import { systemCommandClock, systemIdentities } from "./system-ports.js";
+import { describe, diagnosticLine } from "./value-text.js";
 
 /** Where interruptions come from: the process's `SIGINT` and `SIGTERM`, or a test's. */
 export interface Interruptions {
@@ -70,37 +70,33 @@ type Prepared = { readonly kind: "ready" } | { readonly kind: "ending"; readonly
 
 /**
  * Judges what prepare settled to; never throws, so reading a malformed result is inside the boundary that
- * makes it not delivered. What it settled to, or rejected with, is read once (client-value.ts), every
- * promise met consumed and every value thrown read as it is met, and judged and written from what was read.
+ * makes it not delivered. `ready` is the string "ready"; anything else is read as a not-delivered ending:
+ * `ending` once, then `agpCode` and `proxyCode` once each (client-value.ts), no other field touched, each
+ * value observed as it is read. Every diagnostic is written from what was read.
  */
 function judgePrepared(outcome: Settled): Prepared {
-	if ("error" in outcome) return { kind: "failed", diagnostic: `diagnostic: prepare failed: ${oneLine(readOnce(outcome.error))}` };
-	return judgeRead(readOnce(outcome.value, outcome.then));
-}
-
-function judgeRead(read: Snapshot): Prepared {
-	const unreadable = (odd: Odd): Prepared => ({ kind: "failed", diagnostic: `diagnostic: prepare settled to what could not be read: ${oneLine(odd.thrown)}` });
-	if (read === "ready") return { kind: "ready" };
-	const top = threwAt(read);
-	if (top !== undefined) return unreadable(top);
-	if (isRecord(read)) {
-		const field = (name: string): Snapshot | undefined => Object.hasOwn(read, name) ? read[name] : undefined;
-		const ending = field("ending");
-		if (threwAt(ending) !== undefined) return unreadable(ending as Odd);
-		if (ending === "not-delivered") {
-			const codes: (string | null | undefined)[] = [];
-			for (const name of ["agpCode", "proxyCode"]) {
-				const code = field(name);
-				if (threwAt(code) !== undefined) return unreadable(code as Odd);
-				// A code absent, or undefined, is null, as the call layer's caller interface writes it; anything else but text is no code.
-				if (code === undefined || (code instanceof Odd && code.kind === "undefined")) codes.push(null);
-				else codes.push(code === null || typeof code === "string" ? code : undefined);
-			}
-			const [agpCode, proxyCode] = codes;
-			if (agpCode !== undefined && proxyCode !== undefined) return { kind: "ending", agpCode, proxyCode };
-		}
+	const failed = (diagnostic: string): Prepared => ({ kind: "failed", diagnostic });
+	const neither = (what: string): Prepared => failed(`prepare settled to ${what}, neither ready nor a not-delivered ending`);
+	const unreadable = (threw: unknown): Prepared => failed(`prepare settled to what could not be read: ${describe(threw, true)}`);
+	if ("error" in outcome) return failed(`prepare failed: ${describe(outcome.error, true)}`);
+	const value = outcome.value;
+	if (value === "ready") return { kind: "ready" };
+	if (!isObject(value)) return neither(describe(value));
+	const first = readFields(value, ["ending"]);
+	if ("threw" in first) return unreadable(first.threw);
+	const ending = first.fields.get("ending");
+	if (ending !== "not-delivered") return neither(`an object whose ending is ${describe(ending)}`);
+	const read = readFields(value, ["agpCode", "proxyCode"]);
+	if ("threw" in read) return unreadable(read.threw);
+	const codes: (string | null)[] = [];
+	for (const name of ["agpCode", "proxyCode"]) {
+		const code = read.fields.get(name);
+		// A code absent, or undefined, is null, as the call layer's caller interface writes it; anything else but text is no code.
+		if (code !== undefined && code !== null && typeof code !== "string") return neither(`an object whose ending is "not-delivered" and whose ${name} is ${describe(code)}`);
+		codes.push(code ?? null);
 	}
-	return { kind: "failed", diagnostic: `diagnostic: prepare settled to ${oneLine(read)}, neither ready nor a not-delivered ending` };
+	const [agpCode = null, proxyCode = null] = codes;
+	return { kind: "ending", agpCode, proxyCode };
 }
 
 /** Settles what a call returns, or the error it throws, as an outcome; never rejects (client-value.ts). */
@@ -164,9 +160,11 @@ async function runInvoking(program: CompiledProgram, read: ReadCommand, io: Comm
 	const flags: Flags = read.flags;
 	const json = read.json;
 	const repeatArgs = repeatArguments(read, invocation);
+	// A diagnostic is always one line, cut at 1000 characters (OC4).
+	const diagnose = (text: string): void => { io.stderr(`${diagnosticLine(text)}\n`); };
 	const report = (ending: Ending): number => {
 		const printed = printEnding(ending, { operation: command.operation, invocation, repeat: repeatArgs, json, program: program.name, word: command.word as Wording | undefined, flags });
-		if (printed.diagnostic !== undefined) io.stderr(`${printed.diagnostic}\n`);
+		if (printed.diagnostic !== undefined) diagnose(printed.diagnostic);
 		io.stdout(printed.out);
 		return EXIT_STATUS[ending.ending];
 	};
@@ -195,7 +193,7 @@ async function runInvoking(program: CompiledProgram, read: ReadCommand, io: Comm
 		if (settled.interrupted || interrupted) return interruptedBeforeRun();
 		const prepared = settled.prepared;
 		if (prepared.kind !== "ready") {
-			if (prepared.kind === "failed") io.stderr(`${prepared.diagnostic}\n`);
+			if (prepared.kind === "failed") diagnose(`diagnostic: ${prepared.diagnostic}`);
 			const codes = prepared.kind === "ending" ? prepared : { agpCode: null, proxyCode: null };
 			return report({ ending: "not-delivered", agpCode: codes.agpCode, proxyCode: codes.proxyCode, earlierAttemptsUncertain: repeat });
 		}
@@ -211,11 +209,11 @@ async function runInvoking(program: CompiledProgram, read: ReadCommand, io: Comm
 	const outcome = await outcomeOf(() => (command.run as (context: RunContext<object>) => unknown)(context));
 	// The ending is given: an interruption from here, while it is printed included, changes nothing.
 	interruptWith(() => undefined);
-	// What it rejected with, or settled to, is read once, so no promise among it is left unconsumed.
-	const ended = "error" in outcome ? { ok: false as const, why: `run failed: ${oneLine(readOnce(outcome.error))}` } : readEnding(outcome.value, outcome.then);
+	// What it rejected with is described, and what it settled to read, each as it is met, so no promise among it is left unconsumed.
+	const ended = "error" in outcome ? { ok: false as const, why: `run failed: ${describe(outcome.error, true)}` } : readEnding(outcome.value);
 	if (!ended.ok) {
 		// Whether run invoked anything cannot be known, so the ending is unknown, with the repeat that goes with it.
-		io.stderr(`diagnostic: ${ended.why}\n`);
+		diagnose(`diagnostic: ${ended.why}`);
 		return report({ ending: "unknown", reason: RUN_FAILED, agpCode: null, deliveryReport: null });
 	}
 	return report(ended.ending);
