@@ -53,6 +53,7 @@ describe("OC4 - each ending's status, its JSON object whole and its plain form",
 		for (const [word, why] of [
 			["throws-string", "word threw word failed"], ["throws-error", "word threw Error: word broke"], ["returns-number", "word returned a number, not text"],
 			["returns-object", "word returned an object, not text"], ["returns-rejecting-promise", "word returned a promise, not text"], ["returns-resolving-promise", "word returned a promise, not text"],
+			["throws-rejecting-promise", "word threw <a promise>"],
 		]) {
 			const { json, plain } = await ended({ ending: "answered", answer }, { word });
 			assert.deepEqual([plain.status, plain.signal, plain.stderr], [0, null, `diagnostic: the answer could not be worded, so it is printed as JSON: ${why}\n`], word);
@@ -85,6 +86,41 @@ describe("OC4 - each ending's status, its JSON object whole and its plain form",
 		const record = JSON.parse(json.stdout);
 		assert.equal(json.stdout, `${JSON.stringify({ ending: "refused", operation: "create", invocation: record.invocation, refusal: REFUSAL })}\n`);
 		assert.equal(plain.stdout, `ending: refused\noperation: create\ninvocation: ${plainFacts(plain.stdout).invocation}\nrefusal: ${JSON.stringify(REFUSAL)}\n`);
+	});
+
+	test("answers and refusal details holding a member named __proto__, its value an object or a scalar, nested too: each record printed whole, as the call layer's ending holds it, in both forms", async () => {
+		// Parsed from JSON text, as the call layer decodes them: __proto__ is an own member, kept at every depth.
+		const payloads = [
+			JSON.parse('{"__proto__":{"ok":"from-proto","kept":true},"nested":{"__proto__":"text","list":[{"__proto__":{"deeper":1}}]},"safe":1}'),
+			JSON.parse('{"__proto__":"text","nested":{"__proto__":{"kept":[1,2]}},"list":[{"__proto__":7}],"ok":null}'),
+		];
+		const returnedOf = (r) => {
+			const found = r.records.filter((x) => x.event === "run-returned");
+			assert.equal(found.length, 1);
+			return found[0].returned;
+		};
+		for (const payload of payloads) {
+			assert.ok(Object.hasOwn(payload, "__proto__") && Object.hasOwn(payload.nested, "__proto__"), "the payload holds own __proto__ members");
+			for (const [ending, status] of [[{ ending: "answered", answer: payload }, 0], [{ ending: "refused", refusal: { ...REFUSAL, details: payload } }, 2]]) {
+				const field = ending.ending === "answered" ? "answer" : "refusal";
+				const { json, plain } = await ended(ending);
+				const unworded = await runFixture(BASE, { env: BASE_ENV, scenario: { plainAnswer: true, prepare: { settle: "ready" }, run: { ending } } });
+				for (const r of [json, plain, unworded]) assert.deepEqual([r.status, r.signal, r.stderr], [status, null, ""], field);
+				// The call layer's ending, as run returned it, holds the member; the record printed holds it unchanged.
+				const given = returnedOf(json);
+				assert.deepEqual(given[field], ending[field]);
+				const record = JSON.parse(json.stdout);
+				assert.deepEqual(record, { ending: given.ending, operation: "create", invocation: given.invocation, [field]: given[field] });
+				assert.equal(json.stdout, `${JSON.stringify({ ending: given.ending, operation: "create", invocation: given.invocation, [field]: given[field] })}\n`);
+				const value = returnedOf(plain)[field];
+				const inv = plainFacts(plain.stdout).invocation;
+				assert.equal(plain.stdout, field === "answer"
+					// word is given its own copy, the member still a member: answer.ok is the payload's own, never its __proto__'s.
+					? `ending: answered\noperation: create\ninvocation: ${inv}\nanswer-ok: ${value.ok ?? "-"}\nanswer-json: ${JSON.stringify(value)}\nverbose: false\n`
+					: `ending: refused\noperation: create\ninvocation: ${inv}\nrefusal: ${JSON.stringify(value)}\n`);
+				assert.equal(unworded.stdout, `ending: ${given.ending}\noperation: create\ninvocation: ${plainFacts(unworded.stdout).invocation}\n${field}: ${JSON.stringify(returnedOf(unworded)[field])}\n`);
+			}
+		}
 	});
 
 	test("not delivered: status 3, agpCode, proxyCode and earlierAttemptsUncertain as the call layer gave them", async () => {
@@ -135,6 +171,8 @@ describe("OC4 - each ending's status, its JSON object whole and its plain form",
 			["thenable-rejected-inner", "run failed: Error: the inner promise rejected"],
 			["rejected-answer", "run returned an answered ending whose answer is no JSON value: answer is an object that is no plain JSON object"],
 			["rejected-code", "run returned a not-delivered ending without agpCode, proxyCode and earlierAttemptsUncertain"],
+			["first-read-rejected-code", "run returned a not-delivered ending without agpCode, proxyCode and earlierAttemptsUncertain"],
+			["throwing-rejected-code", "run returned what could not be read as an ending: <a promise>"],
 		]) {
 			const json = await runFixture([...BASE, "--json"], { env: BASE_ENV, scenario: { run: { malformed } } });
 			const plain = await runFixture(BASE, { env: BASE_ENV, scenario: { run: { malformed } } });
@@ -171,6 +209,66 @@ describe("OC4 - each ending's status, its JSON object whole and its plain form",
 		} finally {
 			process.off("unhandledRejection", onRejection);
 		}
+	});
+
+	test("a run result whose getter gives a rejected promise on its first read only, or throws one, and a word that throws one: each promise consumed as it is met, so with standard output's write held the command still exits 4, or 0 for word, with one diagnostic line and its repeat", async () => {
+		const escaped = [];
+		const onRejection = (reason) => escaped.push(reason);
+		process.on("unhandledRejection", onRejection);
+		try {
+			for (const malformed of ["first-read-rejected-code", "throwing-rejected-code"]) {
+				const made = MALFORMED[malformed]();
+				let reads = 0;
+				// Counting the reads of agpCode: one only, whatever the result is judged and written as.
+				const counted = Object.defineProperty({ ending: "not-delivered", proxyCode: null, earlierAttemptsUncertain: false }, "agpCode", { enumerable: true, get() { reads++; return Object.getOwnPropertyDescriptor(made, "agpCode").get.call(made); } });
+				const decl = fixtureDeclaration({});
+				decl.commands = decl.commands.map((c) => c.local ? c : { ...c, run: () => counted });
+				const err = [];
+				const status = await declareProgram(decl).run({ args: [...BASE, "--json"], env: BASE_ENV, stdout: () => undefined, stderr: (t) => err.push(t) });
+				assert.deepEqual([status, reads, err.length], [4, 1, 1], malformed);
+			}
+			const decl = fixtureDeclaration({ word: "throws-rejecting-promise", run: { ending: { ending: "answered", answer: { a: 1 } } } });
+			const err = [];
+			assert.equal(await declareProgram(decl).run({ args: BASE, env: BASE_ENV, stdout: () => undefined, stderr: (t) => err.push(t) }), 0);
+			assert.deepEqual(err, ["diagnostic: the answer could not be worded, so it is printed as JSON: word threw <a promise>\n"]);
+			await sleep(50);
+			assert.deepEqual(escaped, [], "no unhandled rejection in this process");
+		} finally {
+			process.off("unhandledRejection", onRejection);
+		}
+		/** Runs with standard output's write held until the command received SIGINT, sent well after the ending was written, so a rejection left unhandled would end the process with status 1 first. */
+		const held = async (args, scenario) => {
+			const command = startFixture(args, { env: BASE_ENV, scenario: { ...scenario, holdWrite: { until: ["SIGINT"] } } });
+			await command.waitFor("write-held");
+			await sleep(200);
+			command.signal("SIGINT");
+			const r = await command.ended;
+			assert.ok(events(r).includes("signal-received") && events(r).includes("write-released"), "the process lived until the held write was released");
+			return r;
+		};
+		const settings = ["--host", "host-a", "--service", "store", "--url", "ws://127.0.0.1:47100/agp", "--identity", "alice", "--timeout", "10s", "--connect-timeout", "5s", "--retries", "3"];
+		const command = ["--name", "a", "--summary", "it's \"quoted\""];
+		for (const [malformed, why] of [
+			["first-read-rejected-code", "run returned a not-delivered ending without agpCode, proxyCode and earlierAttemptsUncertain"],
+			["throwing-rejected-code", "run returned what could not be read as an ending: <a promise>"],
+		]) {
+			const json = await held([...BASE, "--json"], { run: { malformed } });
+			const plain = await held(BASE, { run: { malformed } });
+			for (const r of [json, plain]) assert.deepEqual([r.status, r.signal, r.stderr], [4, null, `diagnostic: ${why}\n`], malformed);
+			const record = JSON.parse(json.stdout);
+			assert.equal(json.stdout, `${JSON.stringify({ ending: "unknown", operation: "create", invocation: record.invocation, reason: "run-failed", agpCode: null, deliveryReport: null, repeat: ["publish", ...settings, "--json", ...command, "--invocation", record.invocation] })}\n`);
+			const inv = plainFacts(plain.stdout).invocation;
+			const line = ["fixture", "publish", ...settings, ...command, "--invocation", inv].map((w) => `'${w.replaceAll("'", "'\\''")}'`).join(" ");
+			assert.equal(plain.stdout, `ending: unknown\noperation: create\ninvocation: ${inv}\nreason: run-failed\nagpCode: null\ndeliveryReport: null\nrepeat: ${line}\n`);
+		}
+		const answer = { safe: true };
+		const scenario = { word: "throws-rejecting-promise", prepare: { settle: "ready" }, run: { ending: { ending: "answered", answer } } };
+		const plain = await held(BASE, scenario);
+		assert.deepEqual([plain.status, plain.signal, plain.stderr], [0, null, "diagnostic: the answer could not be worded, so it is printed as JSON: word threw <a promise>\n"]);
+		assert.equal(plain.stdout, `ending: answered\noperation: create\ninvocation: ${plainFacts(plain.stdout).invocation}\nanswer: ${JSON.stringify(answer)}\n`);
+		const json = await held([...BASE, "--json"], scenario);
+		assert.deepEqual([json.status, json.signal, json.stderr], [0, null, ""], "the JSON form does not word the answer");
+		assert.equal(json.stdout, `${JSON.stringify({ ending: "answered", operation: "create", invocation: JSON.parse(json.stdout).invocation, answer })}\n`);
 	});
 
 	test("a usage error, with --json and without, leaves standard output empty and exits 1", async () => {

@@ -100,6 +100,13 @@ export const MALFORMED = Object.freeze({
 	"rejected-answer": () => ({ ending: "answered", answer: Promise.reject(new Error("the answer's promise rejected")) }),
 	/** A not-delivered ending whose agpCode is a promise that rejects. */
 	"rejected-code": () => ({ ending: "not-delivered", agpCode: Promise.reject(new Error("the code's promise rejected")), proxyCode: null, earlierAttemptsUncertain: false }),
+	/** A not-delivered ending whose agpCode is a getter giving a rejected promise on its first read only, and null after. */
+	"first-read-rejected-code": () => {
+		let reads = 0;
+		return { ending: "not-delivered", get agpCode() { return ++reads === 1 ? Promise.reject(new Error("the code's first read rejected")) : null; }, proxyCode: null, earlierAttemptsUncertain: false };
+	},
+	/** A not-delivered ending whose agpCode is a getter that throws a rejected promise. */
+	"throwing-rejected-code": () => ({ ending: "not-delivered", get agpCode() { throw Promise.reject(new Error("the code getter's thrown promise rejected")); }, proxyCode: null, earlierAttemptsUncertain: false }),
 });
 
 /** The wordings a scenario's `word` may name, each failing in its own way, besides the fixture's own. */
@@ -110,6 +117,7 @@ const WORDINGS = Object.freeze({
 	"returns-object": () => ({ text: "not text" }),
 	"returns-rejecting-promise": () => Promise.reject(new Error("word rejected")),
 	"returns-resolving-promise": () => Promise.resolve("too late"),
+	"throws-rejecting-promise": () => { throw Promise.reject(new Error("word's thrown promise rejected")); },
 });
 
 /** The fixture client's prepare, as the scenario's `prepare` says. */
@@ -172,7 +180,8 @@ function fixtureRun(spec, record, identities) {
 		}
 		if (spec.afterMs !== undefined) await untilOnClock({ now: () => performance.now() }, performance.now() + spec.afterMs);
 		const result = endingFor(ending, context, context.invocation);
-		record("run-returned", { ending: result.ending });
+		// The whole ending returned, as the call layer would give it, so a test compares the record printed with it.
+		record("run-returned", { ending: result.ending, returned: result });
 		// An interruption once the ending is given: sent to this very process before run returns it.
 		if (spec.selfSignal) process.kill(process.pid, spec.selfSignal);
 		return result;

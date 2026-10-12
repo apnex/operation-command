@@ -11,9 +11,11 @@ import type { IdentitySource } from "@apnex/operation-call";
 import { isInvocationId } from "@apnex/operation-call/message-format";
 import { compileProgram, type CompiledCommand, type CompiledProgram } from "./declaration.js";
 import type { CommandClock, Flags, LocalContext, ProgramDeclaration, RunContext } from "./declaration-types.js";
-import { EXIT_STATUS, observeAll, oneLine, printEnding, readEnding, RUN_FAILED, type Ending, type Wording } from "./endings.js";
+import { Odd, readOnce, settle, type Settled, type Snapshot } from "./client-value.js";
+import { EXIT_STATUS, printEnding, readEnding, RUN_FAILED, type Ending, type Wording } from "./endings.js";
 import { readCommand, type ReadCommand } from "./reading.js";
 import { repeatArguments } from "./repeat.js";
+import { isRecord, oneLine, threwAt } from "./snapshot-text.js";
 import { systemCommandClock, systemIdentities } from "./system-ports.js";
 
 /** Where interruptions come from: the process's `SIGINT` and `SIGTERM`, or a test's. */
@@ -63,49 +65,53 @@ function readClock(clock: CommandClock): number {
 	return now;
 }
 
-const isObject = (value: unknown): value is { readonly [key: string]: unknown } => value !== null && typeof value === "object" && !Array.isArray(value);
-
 /** What `prepare` settled to, judged (OC3): ready, its not-delivered ending's codes, or what was wrong. */
 type Prepared = { readonly kind: "ready" } | { readonly kind: "ending"; readonly agpCode: string | null; readonly proxyCode: string | null } | { readonly kind: "failed"; readonly diagnostic: string };
 
-/** Judges what prepare settled to; never throws, so reading a malformed result is inside the boundary that makes it not delivered. */
-function judgePrepared(outcome: { readonly value: unknown } | { readonly error: unknown }): Prepared {
-	if ("error" in outcome) {
-		// What it rejected with is observed too, so a promise given as the reason leaves no rejection escaping.
-		observeAll(outcome.error);
-		return { kind: "failed", diagnostic: `diagnostic: prepare failed: ${oneLine(outcome.error)}` };
-	}
-	const value = outcome.value;
-	let judged: Prepared;
-	try {
-		judged = judgeValue(value);
-	} catch (error) {
-		judged = { kind: "failed", diagnostic: `diagnostic: prepare settled to what could not be read: ${oneLine(error)}` };
-	}
-	// Every promise the result holds is observed, a malformed one's or one beside the fields read, so none of their rejections escapes.
-	observeAll(value);
-	return judged;
+/**
+ * Judges what prepare settled to; never throws, so reading a malformed result is inside the boundary that
+ * makes it not delivered. What it settled to, or rejected with, is read once (client-value.ts), every
+ * promise met consumed and every value thrown read as it is met, and judged and written from what was read.
+ */
+function judgePrepared(outcome: Settled): Prepared {
+	if ("error" in outcome) return { kind: "failed", diagnostic: `diagnostic: prepare failed: ${oneLine(readOnce(outcome.error))}` };
+	return judgeRead(readOnce(outcome.value, outcome.then));
 }
 
-function judgeValue(value: unknown): Prepared {
-	if (value === "ready") return { kind: "ready" };
-	if (isObject(value) && value["ending"] === "not-delivered") {
-		const agpCode = value["agpCode"] ?? null;
-		const proxyCode = value["proxyCode"] ?? null;
-		if ((agpCode === null || typeof agpCode === "string") && (proxyCode === null || typeof proxyCode === "string")) return { kind: "ending", agpCode, proxyCode };
+function judgeRead(read: Snapshot): Prepared {
+	const unreadable = (odd: Odd): Prepared => ({ kind: "failed", diagnostic: `diagnostic: prepare settled to what could not be read: ${oneLine(odd.thrown)}` });
+	if (read === "ready") return { kind: "ready" };
+	const top = threwAt(read);
+	if (top !== undefined) return unreadable(top);
+	if (isRecord(read)) {
+		const field = (name: string): Snapshot | undefined => Object.hasOwn(read, name) ? read[name] : undefined;
+		const ending = field("ending");
+		if (threwAt(ending) !== undefined) return unreadable(ending as Odd);
+		if (ending === "not-delivered") {
+			const codes: (string | null | undefined)[] = [];
+			for (const name of ["agpCode", "proxyCode"]) {
+				const code = field(name);
+				if (threwAt(code) !== undefined) return unreadable(code as Odd);
+				// A code absent, or undefined, is null, as the call layer's caller interface writes it; anything else but text is no code.
+				if (code === undefined || (code instanceof Odd && code.kind === "undefined")) codes.push(null);
+				else codes.push(code === null || typeof code === "string" ? code : undefined);
+			}
+			const [agpCode, proxyCode] = codes;
+			if (agpCode !== undefined && proxyCode !== undefined) return { kind: "ending", agpCode, proxyCode };
+		}
 	}
-	return { kind: "failed", diagnostic: `diagnostic: prepare settled to ${oneLine(value)}, neither ready nor a not-delivered ending` };
+	return { kind: "failed", diagnostic: `diagnostic: prepare settled to ${oneLine(read)}, neither ready nor a not-delivered ending` };
 }
 
-/** Settles a value that may be a promise, or a call that may throw, as an outcome. */
-function outcomeOf(call: () => unknown): Promise<{ readonly value: unknown } | { readonly error: unknown }> {
-	let pending: Promise<unknown>;
+/** Settles what a call returns, or the error it throws, as an outcome; never rejects (client-value.ts). */
+function outcomeOf(call: () => unknown): Promise<Settled> {
+	let returned: unknown;
 	try {
-		pending = Promise.resolve(call());
+		returned = call();
 	} catch (error) {
-		pending = Promise.reject(error);
+		return Promise.resolve({ error });
 	}
-	return pending.then((value) => ({ value }), (error: unknown) => ({ error }));
+	return settle(returned);
 }
 
 /** Declares a program: checks the declaration (OC1), throwing a DeclarationError naming any rule it breaks. */
@@ -205,8 +211,8 @@ async function runInvoking(program: CompiledProgram, read: ReadCommand, io: Comm
 	const outcome = await outcomeOf(() => (command.run as (context: RunContext<object>) => unknown)(context));
 	// The ending is given: an interruption from here, while it is printed included, changes nothing.
 	interruptWith(() => undefined);
-	if ("error" in outcome) observeAll(outcome.error);
-	const ended = "error" in outcome ? { ok: false as const, why: `run failed: ${oneLine(outcome.error)}` } : readEnding(outcome.value);
+	// What it rejected with, or settled to, is read once, so no promise among it is left unconsumed.
+	const ended = "error" in outcome ? { ok: false as const, why: `run failed: ${oneLine(readOnce(outcome.error))}` } : readEnding(outcome.value, outcome.then);
 	if (!ended.ok) {
 		// Whether run invoked anything cannot be known, so the ending is unknown, with the repeat that goes with it.
 		io.stderr(`diagnostic: ${ended.why}\n`);

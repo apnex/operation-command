@@ -46,6 +46,32 @@ describe("OC7 - each ending through the real call layer, plainly and as JSON, un
 		assert.equal(plainFacts(plain.stdout).refusal, JSON.stringify(REFUSAL));
 	});
 
+	test("answers and refusal details holding a member named __proto__, its value an object or a scalar, nested too: each record printed whole, as the call layer's ending holds it, in both forms", async () => {
+		const payloads = [
+			JSON.parse('{"__proto__":{"kept":true},"nested":{"__proto__":"text","list":[{"__proto__":{"deeper":1}}]},"safe":1}'),
+			JSON.parse('{"__proto__":"text","nested":{"__proto__":{"kept":[1,2]}},"list":[{"__proto__":7}]}'),
+		];
+		for (const payload of payloads) {
+			for (const [mode, field, status] of [["answer", "answer", 0], ["refuse", "refusal", 2]]) {
+				const scenario = { payload, operations: { read: { mode } } };
+				const json = await run(["read", "--name", "a", "--json"], { scenario });
+				const plain = await run(["read", "--name", "a"], { scenario });
+				for (const r of [json, plain]) {
+					assert.deepEqual([r.status, r.signal, r.stderr], [status, null, ""], `${mode} ${r === json ? "--json" : "plain"}`);
+					// The call layer's ending, as operation-call gave it over AGP, holds the member at every depth.
+					const given = only(r.records.filter((x) => x.event === "call-ending"), "call-ending").ending;
+					assert.deepEqual(field === "answer" ? given.answer : given.refusal.details, payload);
+					assert.ok(Object.hasOwn(field === "answer" ? given.answer : given.refusal.details, "__proto__"));
+					const expected = { ending: given.ending, operation: "read", invocation: given.invocation, [field]: given[field] };
+					if (r === json) {
+						assert.deepEqual(JSON.parse(r.stdout), expected);
+						assert.equal(r.stdout, `${JSON.stringify(expected)}\n`);
+					} else assert.equal(r.stdout, `ending: ${given.ending}\noperation: read\ninvocation: ${given.invocation}\n${field}: ${JSON.stringify(given[field])}\n`);
+				}
+			}
+		}
+	});
+
 	test("not delivered: a host no route reaches, AGP's code unchanged, status 3, the operation never receiving it", async () => {
 		const json = await run(["publish", "--name", "a", "--summary", "s", "--host", "host-z", "--json"]);
 		assert.deepEqual([json.status, json.stderr], [3, ""]);

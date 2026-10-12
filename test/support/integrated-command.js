@@ -6,7 +6,8 @@
 // is ready; each command's run builds its input from its flags and invokes through the caller. Every request
 // an operation receives is recorded - node, service, operation, input, invocation, attempt and the principal
 // the host's evidence names - in the scenario's record file, with what the client was given. A scenario may
-// hold standard output until the process received the signals it names (held-write.js).
+// hold standard output until the process received the signals it names (held-write.js), and name a payload
+// that its operations answer, or give as their refusal's details. The ending each run returns is recorded.
 import { createNode } from "@agp/node";
 import { createLoopbackFabric } from "@agp/transport-loopback";
 import { createCaller, createOperationHost } from "@apnex/operation-call";
@@ -54,9 +55,10 @@ async function openTopology(identity) {
 					record("received", { node: h.nodeId, service, operation, input, invocation: context.invocation, attempt: context.attempt, principal: context.evidence.principal });
 					const how = behaviour(operation);
 					if (how.mode === "silent") return new Promise(() => undefined);
-					if (how.mode === "refuse") return { outcome: "refused", refusal: REFUSAL };
+					// A scenario's payload, when it names one, is the answer, or the refusal's details, as JSON gives it.
+					if (how.mode === "refuse") return { outcome: "refused", refusal: scenario.payload === undefined ? REFUSAL : { ...REFUSAL, details: scenario.payload } };
 					if (how.mode === "delayed") await untilOnClock({ now: () => performance.now() }, performance.now() + how.ms);
-					return { outcome: "answered", answer: { node: h.nodeId, service, operation, input } };
+					return { outcome: "answered", answer: scenario.payload === undefined ? { node: h.nodeId, service, operation, input } : scenario.payload };
 				});
 			}
 		}
@@ -118,6 +120,8 @@ const runWith = (input, pages = 1) => async ({ flags, bound, invocation, repeat,
 	}
 	if (ending.ending === "answered" && pages > 1) ending = { ...ending, answer: { pages: [...answers, ending.answer] } };
 	if (scenario.selfSignal) process.kill(process.pid, scenario.selfSignal);
+	// The call layer's ending, whole, as run returns it, so a test compares the record printed with it.
+	record("call-ending", { ending });
 	return ending;
 };
 

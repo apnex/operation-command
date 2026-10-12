@@ -8,7 +8,7 @@ import { describe, test } from "node:test";
 import { declareProgram } from "@apnex/operation-command";
 import { sleep, within } from "../support/clock-timer.js";
 import { fixtureDeclaration, MALFORMED } from "../support/fixture-program.js";
-import { BASE_ENV, plainFacts, runFixture } from "../support/run-command.js";
+import { BASE_ENV, plainFacts, runFixture, startFixture } from "../support/run-command.js";
 
 const INVOCATION = /^[0-9]{13}-[0-9a-f]{16}$/;
 const GIVEN = "1791540000000-3f9a0c1d2b4e5f60";
@@ -129,9 +129,12 @@ describe("OC3 - preparing with the deadline on the injected clock port", { concu
 			["thenable-throws", "prepare failed: Error: then threw"],
 			["thenable-throwing-ending", "prepare settled to what could not be read: Error: the settled ending getter threw"],
 			["thenable-rejected-inner", "prepare failed: Error: the inner promise rejected"],
-			["rejected-code", "prepare settled to {\"ending\":\"not-delivered\",\"agpCode\":{},\"proxyCode\":null,\"earlierAttemptsUncertain\":false}, neither ready nor a not-delivered ending"],
-			["bigint-answer", "prepare settled to [object Object], neither ready nor a not-delivered ending"],
-			["cyclic-answer", "prepare settled to [object Object], neither ready nor a not-delivered ending"],
+			// Written from what was read, never by reading the result again: what is no JSON is written as what it was.
+			["rejected-code", "prepare settled to {\"ending\":\"not-delivered\",\"agpCode\":<a promise>,\"proxyCode\":null,\"earlierAttemptsUncertain\":false}, neither ready nor a not-delivered ending"],
+			["bigint-answer", "prepare settled to {\"ending\":\"answered\",\"answer\":1n}, neither ready nor a not-delivered ending"],
+			["cyclic-answer", "prepare settled to {\"ending\":\"answered\",\"answer\":{\"a\":1,\"self\":<itself>}}, neither ready nor a not-delivered ending"],
+			["first-read-rejected-code", "prepare settled to {\"ending\":\"not-delivered\",\"agpCode\":<a promise>,\"proxyCode\":null,\"earlierAttemptsUncertain\":false}, neither ready nor a not-delivered ending"],
+			["throwing-rejected-code", "prepare settled to what could not be read: <a promise>"],
 		]) {
 			const both = await bothForms(["read", "--name", "a"], { prepare: { malformed }, run: answered });
 			assertPrepareEnding(both, { operation: "read", agpCode: null, proxyCode: null });
@@ -168,6 +171,54 @@ describe("OC3 - preparing with the deadline on the injected clock port", { concu
 			assert.deepEqual(escaped, [], "no unhandled rejection");
 		} finally {
 			process.off("unhandledRejection", onRejection);
+		}
+	});
+
+	test("a prepare result whose getter gives a rejected promise on its first read only, or throws one: each promise consumed as it is read, so with standard output's write held the command still exits 3 with one diagnostic line", async () => {
+		const escaped = [];
+		const onRejection = (reason) => escaped.push(reason);
+		process.on("unhandledRejection", onRejection);
+		try {
+			for (const malformed of ["first-read-rejected-code", "throwing-rejected-code"]) {
+				const made = MALFORMED[malformed]();
+				let reads = 0;
+				// Counting the reads of agpCode: one only, whatever the result is judged and written as.
+				const counted = Object.defineProperty({ ending: "not-delivered", proxyCode: null, earlierAttemptsUncertain: false }, "agpCode", { enumerable: true, get() { reads++; return Object.getOwnPropertyDescriptor(made, "agpCode").get.call(made); } });
+				const decl = fixtureDeclaration({});
+				decl.client = { prepare: () => counted };
+				decl.commands = decl.commands.map((c) => c.local ? c : { ...c, run: () => assert.fail("run is never called") });
+				const err = [];
+				const status = await declareProgram(decl).run({ args: ["read", "--name", "a", "--json"], env: BASE_ENV, stdout: () => undefined, stderr: (t) => err.push(t) });
+				assert.deepEqual([status, reads, err.length], [3, 1, 1], malformed);
+			}
+			await sleep(50);
+			assert.deepEqual(escaped, [], "no unhandled rejection in this process");
+		} finally {
+			process.off("unhandledRejection", onRejection);
+		}
+		for (const [malformed, diagnostic] of [
+			["first-read-rejected-code", "prepare settled to {\"ending\":\"not-delivered\",\"agpCode\":<a promise>,\"proxyCode\":null,\"earlierAttemptsUncertain\":false}, neither ready nor a not-delivered ending"],
+			["throwing-rejected-code", "prepare settled to what could not be read: <a promise>"],
+		]) {
+			for (const json of [true, false]) {
+				// Standard output's write is held until the command received SIGINT, sent well after the ending was
+				// written: a rejection left unhandled would end the process with status 1 before the write completes.
+				const command = startFixture(["read", "--name", "a", ...(json ? ["--json"] : [])], { env: BASE_ENV, scenario: { prepare: { malformed }, run: answered, holdWrite: { until: ["SIGINT"] } } });
+				await command.waitFor("write-held");
+				await sleep(200);
+				command.signal("SIGINT");
+				const r = await command.ended;
+				assert.deepEqual([r.status, r.signal, r.stderr], [3, null, `diagnostic: ${diagnostic}\n`], `${malformed} ${json ? "--json" : "plain"}`);
+				assert.ok(events(r).includes("signal-received") && events(r).includes("write-released"), "the process lived until the held write was released");
+				assert.ok(!events(r).includes("run"), "run is never called");
+				if (json) {
+					const record = JSON.parse(r.stdout);
+					assert.match(record.invocation, INVOCATION);
+					assert.equal(r.stdout, `${JSON.stringify({ ending: "not-delivered", operation: "read", invocation: record.invocation, agpCode: null, proxyCode: null, earlierAttemptsUncertain: false })}\n`);
+				} else {
+					assert.equal(r.stdout, `ending: not-delivered\noperation: read\ninvocation: ${plainFacts(r.stdout).invocation}\nagpCode: null\nproxyCode: null\nearlierAttemptsUncertain: false\n`);
+				}
+			}
 		}
 	});
 
