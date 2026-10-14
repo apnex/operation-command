@@ -110,18 +110,25 @@ export const MALFORMED = Object.freeze({
 });
 
 /**
- * Errors whose description meets itself, one longer than a diagnostic line holds, and one whose description
- * never meets the same value twice, each named and made afresh: one whose name is itself, one whose message is
- * itself, one holding, as its message, an error whose name is the first, and one whose every name is a new
- * error. Each case's description, as OC4 writes it, is beside it.
+ * Errors whose description meets itself, ones longer than a diagnostic line holds, and one whose description
+ * would never meet the same value twice if its getters ran, each named and made afresh: one whose name is
+ * itself, one whose message is itself, one holding, as its message, an error whose name is the first; one with
+ * a long message; three whose own name is longer than a line holds, beside a rejected promise as their own
+ * message, a rejected promise held in another own property, and a message getter giving a rejected promise
+ * (attempt 4's F1); and one whose name is an inherited getter. Each case's description, as OC4 writes it from
+ * own data descriptors only - never an inherited name, never a getter run - is beside it.
  */
+const LONG_NAME = "n".repeat(1100);
 export const CYCLIC_ERRORS = Object.freeze({
 	"name-itself": { make: () => { const error = new Error("its name is itself"); error.name = error; return error; }, said: "<cycle>: its name is itself" },
-	"message-itself": { make: () => { const error = new Error("replaced"); error.message = error; return error; }, said: "Error: <cycle>" },
-	"holds-its-holder": { make: () => { const outer = new Error("outer"); const inner = new Error("inner"); outer.message = inner; inner.name = outer; return outer; }, said: "Error: <cycle>: inner" },
-	"long-message": { make: () => new Error("m".repeat(5000)), said: `Error: ${"m".repeat(5000)}` },
-	// Each reading of its name gives a new error of its kind, so no value repeats: the description stops all the same.
-	"endless-names": { make: () => { class Endless extends Error { get name() { return new Endless("again"); } } return new Endless("first"); }, said: "..." },
+	"message-itself": { make: () => { const error = new Error("replaced"); error.message = error; return error; }, said: "<cycle>" },
+	"holds-its-holder": { make: () => { const outer = new Error("outer"); const inner = new Error("inner"); outer.message = inner; inner.name = outer; return outer; }, said: "<cycle>: inner" },
+	"long-message": { make: () => new Error("m".repeat(5000)), said: "m".repeat(5000) },
+	"long-name-rejected-message": { make: () => Object.defineProperties(new Error(), { name: { value: LONG_NAME }, message: { value: Promise.reject(new Error("the message's promise rejected")) } }), said: `${LONG_NAME}: <a promise>` },
+	"long-name-rejected-detail": { make: () => Object.defineProperties(new Error("m"), { name: { value: LONG_NAME }, detail: { value: { held: [Promise.reject(new Error("the detail's promise rejected"))] } } }), said: `${LONG_NAME}: m` },
+	"long-name-rejecting-getter": { make: () => Object.defineProperties(new Error(), { name: { value: LONG_NAME }, message: { get() { return Promise.reject(new Error("the message getter's promise rejected")); } } }), said: `${LONG_NAME}: <getter>` },
+	// Each reading of its name would give a new error of its kind; the name is inherited, so it is never read.
+	"endless-names": { make: () => { class Endless extends Error { get name() { return new Endless("again"); } } return new Endless("first"); }, said: "first" },
 });
 
 /** Throws, or gives a rejected promise of, the named error, as a spec's `fails` says. */
@@ -139,6 +146,8 @@ const WORDINGS = Object.freeze({
 	"returns-rejecting-promise": () => Promise.reject(new Error("word rejected")),
 	"returns-resolving-promise": () => Promise.resolve("too late"),
 	"throws-rejecting-promise": () => { throw Promise.reject(new Error("word's thrown promise rejected")); },
+	"returns-holding-promise": () => ({ held: Promise.reject(new Error("word's held promise rejected")) }),
+	"many-lines": () => "a\n".repeat(200000),
 	...Object.fromEntries(Object.keys(CYCLIC_ERRORS).map((name) => [`throws-${name}`, () => failWith({ error: name, rejects: false })])),
 });
 
@@ -176,7 +185,8 @@ function fixturePrepare(spec, record) {
 
 /** The ending the scenario names for a run, completed with the call's address. */
 function endingFor(spec, context, invocation) {
-	const ending = { ...spec, invocation, attempt: `${invocation}.0000000a`, operation: context.operation };
+	// A hop's ending, and the whole find's passed bound, name no attempt: a scenario says so with attempt null.
+	const ending = { ...spec, invocation, attempt: "attempt" in spec ? spec.attempt : `${invocation}.0000000a`, operation: context.operation };
 	if (ending.ending === "not-delivered" && ending.earlierAttemptsUncertain === "repeat") ending.earlierAttemptsUncertain = context.repeat;
 	return ending;
 }

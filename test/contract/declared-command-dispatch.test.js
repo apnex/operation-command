@@ -314,6 +314,25 @@ describe("OC2 - reading a command: each kind of usage error", { concurrency: 4 }
 		await usageError(["read", "--name", "a", "--invocation"], { says: /--invocation has no value/ });
 		await usageError(["local-echo", "--invocation", "1791540000000-3f9a0c1d2b4e5f60"], { says: /unknown flag "--invocation"/ });
 	});
+
+	test("a declared pattern holding a line feed, a carriage return and a tab: its usage error is still exactly one line beginning usage:, with --json and without, nothing prepared or invoked", async () => {
+		let prepared = 0;
+		let runs = 0;
+		const decl = declaration({
+			client: { prepare: () => { prepared++; return "ready"; } },
+			commands: [{ name: "go", operation: "go", changes: false, run: () => { runs++; return run(); }, flags: [{ flag: "--text", type: { kind: "string", pattern: "first\nsecond\r\tthird" } }] }],
+		});
+		for (const json of [false, true]) {
+			const out = [];
+			const err = [];
+			const status = await declareProgram(decl).run({ args: ["go", ...(json ? ["--json"] : []), "--text", "other"], env: {}, stdout: (t) => out.push(t), stderr: (t) => err.push(t) });
+			const stderr = err.join("");
+			assert.deepEqual([status, out], [1, []], json ? "--json" : "plain");
+			assert.equal(stderr.split("\n").length, 2, `exactly one physical line: ${JSON.stringify(stderr)}`);
+			assert.match(stderr, /^usage: the value "other" of --text does not match the pattern first second third as a whole\n$/);
+		}
+		assert.deepEqual([prepared, runs], [0, 0], "nothing prepared, nothing invoked");
+	});
 });
 
 describe("OC2 - where several usage errors apply, the first met is reported", { concurrency: 4 }, () => {

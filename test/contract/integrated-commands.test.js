@@ -72,21 +72,29 @@ describe("OC7 - each ending through the real call layer, plainly and as JSON, un
 		}
 	});
 
-	test("real answers and refusals returned by run inside an ending with a custom prototype and with a non-enumerable ending: each printed unchanged in both forms with its own status", async () => {
+	test("real answers and refusals returned by run inside an ending with a custom prototype or with a non-enumerable ending: no plain data, so unknown with run-failed, its repeat and one diagnostic line in both forms, the operation having received its request", async () => {
 		for (const envelope of ["custom-prototype", "ending-not-enumerable"]) {
-			for (const [mode, field, status] of [["answer", "answer", 0], ["refuse", "refusal", 2]]) {
+			for (const mode of ["answer", "refuse"]) {
 				const scenario = { envelope, operations: { read: { mode } } };
 				const json = await run(["read", "--name", "a", "--json"], { scenario });
 				const plain = await run(["read", "--name", "a"], { scenario });
 				for (const r of [json, plain]) {
-					assert.deepEqual([r.status, r.signal, r.stderr], [status, null, ""], `${envelope} ${mode} ${r === json ? "--json" : "plain"}`);
-					// The call layer's ending, as operation-call gave it over AGP, before run wrapped it.
+					const what = `${envelope} ${mode} ${r === json ? "--json" : "plain"}`;
+					assert.deepEqual([r.status, r.signal], [4, null], what);
+					assert.match(r.stderr, /^diagnostic: run returned [^\n]*, not an ending the caller interface gives, read as plain data\n$/, what);
+					// The call layer's ending, as operation-call gave it over AGP, before run wrapped it: the operation was invoked.
 					const given = only(r.records.filter((x) => x.event === "call-ending"), "call-ending").ending;
 					assert.equal(given.ending, mode === "answer" ? "answered" : "refused");
 					assert.equal(given.invocation, only(received(r), "request").invocation);
-					const expected = { ending: given.ending, operation: "read", invocation: given.invocation, [field]: given[field] };
-					assert.equal(r.stdout, r === json ? `${JSON.stringify(expected)}\n` : `ending: ${given.ending}\noperation: read\ninvocation: ${given.invocation}\n${field}: ${JSON.stringify(given[field])}\n`);
 				}
+				const record = JSON.parse(json.stdout);
+				const invocation = only(received(json), "request").invocation;
+				assert.equal(json.stdout, `${JSON.stringify({ ending: "unknown", operation: "read", invocation, reason: "run-failed", agpCode: null, deliveryReport: null, repeat: record.repeat })}\n`);
+				// read changes nothing, so its repeat is a fresh run, with no identity.
+				assert.deepEqual([record.repeat[0], record.repeat.includes("--invocation"), record.repeat.includes("--json")], ["read", false, true]);
+				const facts = plainFacts(plain.stdout);
+				assert.deepEqual([facts.ending, facts.operation, facts.invocation, facts.reason, facts.agpCode, facts.deliveryReport], ["unknown", "read", only(received(plain), "request").invocation, "run-failed", "null", "null"]);
+				assert.deepEqual((await shellWords(facts.repeat)).slice(0, 2), [NAME, "read"]);
 			}
 		}
 	});

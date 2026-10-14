@@ -104,11 +104,15 @@ export interface PrepareRequest {
 	readonly flags: Flags;
 }
 
-/** A not-delivered ending as `prepare` may settle to: the call layer's form, of which the command keeps the codes. */
+/** A not-delivered ending as `prepare` may settle to, as plain data: the call layer's form, of which the command keeps the codes. */
 export interface PrepareNotDelivered {
 	readonly ending: "not-delivered";
 	readonly agpCode?: string | null;
 	readonly proxyCode?: string | null;
+	readonly invocation?: string | null;
+	readonly attempt?: string | null;
+	readonly operation?: string | null;
+	readonly earlierAttemptsUncertain?: boolean;
 }
 
 /** What `prepare` settles to. */

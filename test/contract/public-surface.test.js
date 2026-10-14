@@ -101,8 +101,8 @@ test("only the file of default ports reads a clock or randomness; everything els
 	}
 });
 
-test("the package depends on operation-call alone at run time, through a file: link to a checkout beside it, and on AGP only to test", () => {
-	assert.deepEqual(pkg.dependencies, { "@apnex/operation-call": "file:../operation-call" });
+test("the package depends on operation-call and shape-check alone at run time, through file: links to checkouts beside it, and on AGP only to test", () => {
+	assert.deepEqual(pkg.dependencies, { "@apnex/operation-call": "file:../operation-call", "@apnex/shape-check": "file:../shape-check" });
 	for (const [name, spec] of Object.entries(pkg.devDependencies)) {
 		if (name.startsWith("@agp/") || name.startsWith("@apnex/")) assert.match(spec, /^file:\.\.\//, `${name} is linked from a checkout beside this one`);
 	}

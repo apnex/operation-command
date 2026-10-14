@@ -21,6 +21,28 @@ const only = (result, event) => {
 	return found[0];
 };
 
+/** The diagnostic of a prepare result that is neither ready nor a plain-data not-delivered ending, as one line. */
+const NEITHER = /^diagnostic: prepare settled to [^\n]*, neither ready nor a not-delivered ending read as plain data\n$/;
+const neither = (described) => `prepare settled to ${described}, neither ready nor a not-delivered ending read as plain data`;
+const getterCode = '{"ending": "not-delivered", "agpCode": <getter>, "proxyCode": null, "earlierAttemptsUncertain": false}';
+
+/** Each malformed prepare result and its diagnostic, written from own data descriptors: no getter, then or conversion runs. */
+const PREPARE_MALFORMED = Object.freeze({
+	"throwing-ending": neither('{"ending": <getter>}'),
+	"throwing-code": neither(getterCode),
+	"throwing-then": neither('{"then": <getter>}'),
+	"thenable-throws": neither('{"then": <a function>}'),
+	"thenable-throwing-ending": neither('{"then": <a function>}'),
+	"thenable-rejected-inner": neither('{"then": <a function>}'),
+	"rejected-code": neither('{"ending": "not-delivered", "agpCode": <a promise>, "proxyCode": null, "earlierAttemptsUncertain": false}'),
+	"rejected-answer": neither('{"ending": "answered", "answer": <a promise>}'),
+	"throwing-answer": neither('{"ending": "answered", "answer": <getter>}'),
+	"bigint-answer": neither('{"ending": "answered", "answer": 1n}'),
+	"cyclic-answer": neither('{"ending": "answered", "answer": {"a": 1, "self": <cycle>}}'),
+	"first-read-rejected-code": neither(getterCode),
+	"throwing-rejected-code": neither(getterCode),
+});
+
 /** Runs a scenario with --json and without, giving both results. */
 async function bothForms(args, scenario, env = BASE_ENV) {
 	return { json: await runFixture([...args, "--json"], { env, scenario }), plain: await runFixture(args, { env, scenario }) };
@@ -111,32 +133,21 @@ describe("OC3 - preparing with the deadline on the injected clock port", { concu
 	test("prepare rejecting ends the command not delivered with null codes and one diagnostic line, run never called", async () => {
 		const both = await bothForms(["read", "--name", "a"], { prepare: { settle: { reject: "the socket\nwould not open" } }, run: answered });
 		assertPrepareEnding(both, { operation: "read", agpCode: null, proxyCode: null });
-		for (const result of [both.json, both.plain]) assert.equal(result.stderr, "diagnostic: prepare failed: Error: the socket would not open\n");
+		// Its own message only: the name an error inherits is never read (zorg's D54).
+		for (const result of [both.json, both.plain]) assert.equal(result.stderr, "diagnostic: prepare failed: the socket would not open\n");
 	});
 
 	test("prepare settling to anything else ends the command not delivered with null codes and one diagnostic line, run never called", async () => {
-		for (const settle of [{ ready: true }, 42, "Ready", null, { ending: "answered", answer: 1 }, { ending: "not-delivered", agpCode: 7 }, { ending: "not-delivered", proxyCode: false }]) {
+		for (const settle of [{ ready: true }, 42, "Ready", null, { ending: "answered", answer: 1 }, { ending: "not-delivered", agpCode: 7 }, { ending: "not-delivered", proxyCode: false },
+			{ ending: "not-delivered", agpCode: "NO_ROUTE", extra: 1 }, { ending: "not-delivered", earlierAttemptsUncertain: "yes" }, { ending: "not-delivered", invocation: 1 }, ["not-delivered"]]) {
 			const both = await bothForms(["read", "--name", "a"], { prepare: { settle }, run: answered });
 			assertPrepareEnding(both, { operation: "read", agpCode: null, proxyCode: null });
-			for (const result of [both.json, both.plain]) assert.match(result.stderr, /^diagnostic: prepare settled to [^\n]*, neither ready nor a not-delivered ending\n$/);
+			for (const result of [both.json, both.plain]) assert.match(result.stderr, NEITHER, JSON.stringify(settle));
 		}
 	});
 
-	test("a prepare result that cannot be read - a thenable, a throwing getter on it, a rejected inner promise - ends the command not delivered with null codes and one diagnostic line, run never called, through the process adapter", async () => {
-		for (const [malformed, diagnostic] of [
-			["throwing-ending", "prepare settled to what could not be read: Error: the ending getter threw"],
-			["throwing-code", "prepare settled to what could not be read: Error: the code getter threw"],
-			["throwing-then", "prepare failed: Error: the then getter threw"],
-			["thenable-throws", "prepare failed: Error: then threw"],
-			["thenable-throwing-ending", "prepare settled to what could not be read: Error: the settled ending getter threw"],
-			["thenable-rejected-inner", "prepare failed: Error: the inner promise rejected"],
-			// Written from what was read, never by reading the result again: only ending, agpCode and proxyCode are read.
-			["rejected-code", "prepare settled to an object whose ending is \"not-delivered\" and whose agpCode is <a promise>, neither ready nor a not-delivered ending"],
-			["bigint-answer", "prepare settled to an object whose ending is \"answered\", neither ready nor a not-delivered ending"],
-			["cyclic-answer", "prepare settled to an object whose ending is \"answered\", neither ready nor a not-delivered ending"],
-			["first-read-rejected-code", "prepare settled to an object whose ending is \"not-delivered\" and whose agpCode is <a promise>, neither ready nor a not-delivered ending"],
-			["throwing-rejected-code", "prepare settled to what could not be read: <a promise>"],
-		]) {
+	test("a prepare result that is no plain data - a non-native thenable, a getter on it, a promise in a field, no JSON - ends the command not delivered with null codes and one diagnostic line, no getter or then called, run never called, through the process adapter", async () => {
+		for (const [malformed, diagnostic] of Object.entries(PREPARE_MALFORMED)) {
 			const both = await bothForms(["read", "--name", "a"], { prepare: { malformed }, run: answered });
 			assertPrepareEnding(both, { operation: "read", agpCode: null, proxyCode: null });
 			for (const result of [both.json, both.plain]) assert.deepEqual([result.signal, result.stderr], [null, `diagnostic: ${diagnostic}\n`], malformed);
@@ -148,8 +159,8 @@ describe("OC3 - preparing with the deadline on the injected clock port", { concu
 		const onRejection = (reason) => escaped.push(reason);
 		process.on("unhandledRejection", onRejection);
 		try {
-			// rejected-answer's promise lies in a field preparing never reads, so it is never met (OC3): it is the application's own.
-			for (const malformed of Object.keys(MALFORMED).filter((name) => name !== "rejected-answer")) {
+			// Every promise the result holds is observed, rejected-answer's included, though no ending field holds it.
+			for (const malformed of Object.keys(MALFORMED)) {
 				let runs = 0;
 				const decl = fixtureDeclaration({});
 				decl.client = { prepare: () => MALFORMED[malformed]() };
@@ -176,7 +187,7 @@ describe("OC3 - preparing with the deadline on the injected clock port", { concu
 		}
 	});
 
-	test("a prepare result whose getter gives a rejected promise on its first read only, or throws one: each promise consumed as it is read, so with standard output's write held the command still exits 3 with one diagnostic line", async () => {
+	test("a prepare result whose getter would give a rejected promise on its first read only, or throw one: the getter is never called, so with standard output's write held the command still exits 3 with one diagnostic line", async () => {
 		const escaped = [];
 		const onRejection = (reason) => escaped.push(reason);
 		process.on("unhandledRejection", onRejection);
@@ -184,24 +195,22 @@ describe("OC3 - preparing with the deadline on the injected clock port", { concu
 			for (const malformed of ["first-read-rejected-code", "throwing-rejected-code"]) {
 				const made = MALFORMED[malformed]();
 				let reads = 0;
-				// Counting the reads of agpCode: one only, whatever the result is judged and written as.
+				// Counting the reads of agpCode: none, since a getter is no plain data and is never called (zorg's D54).
 				const counted = Object.defineProperty({ ending: "not-delivered", proxyCode: null, earlierAttemptsUncertain: false }, "agpCode", { enumerable: true, get() { reads++; return Object.getOwnPropertyDescriptor(made, "agpCode").get.call(made); } });
 				const decl = fixtureDeclaration({});
 				decl.client = { prepare: () => counted };
 				decl.commands = decl.commands.map((c) => c.local ? c : { ...c, run: () => assert.fail("run is never called") });
 				const err = [];
 				const status = await declareProgram(decl).run({ args: ["read", "--name", "a", "--json"], env: BASE_ENV, stdout: () => undefined, stderr: (t) => err.push(t) });
-				assert.deepEqual([status, reads, err.length], [3, 1, 1], malformed);
+				assert.deepEqual([status, reads, err.length], [3, 0, 1], malformed);
 			}
 			await sleep(50);
 			assert.deepEqual(escaped, [], "no unhandled rejection in this process");
 		} finally {
 			process.off("unhandledRejection", onRejection);
 		}
-		for (const [malformed, diagnostic] of [
-			["first-read-rejected-code", "prepare settled to an object whose ending is \"not-delivered\" and whose agpCode is <a promise>, neither ready nor a not-delivered ending"],
-			["throwing-rejected-code", "prepare settled to what could not be read: <a promise>"],
-		]) {
+		for (const malformed of ["first-read-rejected-code", "throwing-rejected-code"]) {
+			const diagnostic = PREPARE_MALFORMED[malformed];
 			for (const json of [true, false]) {
 				// Standard output's write is held until the command received SIGINT, sent well after the ending was
 				// written: a rejection left unhandled would end the process with status 1 before the write completes.
@@ -336,35 +345,65 @@ describe("OC3 - what prepare settles to: the string ready, or a not-delivered en
 		assert.equal(plain.stdout, `ending: answered\noperation: read\ninvocation: ${only(plain, "run").invocation}\nanswer-ok: true\nanswer-json: {"ok":true}\nverbose: false\n`);
 	});
 
-	test("not-delivered endings whose fields are inherited, not enumerable or getters: each field read once, no other touched, the command not delivered with that ending's codes and no diagnostic", async () => {
+	test("plain-data not-delivered endings, with the codes alone or with the caller interface's other not-delivered fields, a null prototype included: the command not delivered with that ending's codes and no diagnostic", async () => {
+		const address = { invocation: "1791540000000-1234567890abcdef", attempt: null, operation: "read", earlierAttemptsUncertain: true };
+		for (const [fields, agpCode, proxyCode] of [
+			[{ ending: "not-delivered", agpCode: "NO_ROUTE", proxyCode: null }, "NO_ROUTE", null],
+			[{ ending: "not-delivered", proxyCode: "key-mismatch" }, null, "key-mismatch"],
+			[{ ending: "not-delivered" }, null, null],
+			[{ ending: "not-delivered", agpCode: "TIMEOUT", proxyCode: null, ...address }, "TIMEOUT", null],
+			[Object.assign(Object.create(null), { ending: "not-delivered", agpCode: null, proxyCode: "proxy-unreachable", ...address }), null, "proxy-unreachable"],
+		]) {
+			for (const r of await preparedInProcess(() => ({ value: fields }))) {
+				assert.deepEqual([r.status, r.runs, r.stderr], [3, 0, ""], JSON.stringify(fields));
+				assert.equal(r.stdout, preparedRecord(r.json, r.stdout, agpCode, proxyCode));
+			}
+		}
+	});
+
+	test("not-delivered endings with a custom prototype, an inherited field, a non-enumerable field or a getter: no plain data, so not delivered with null codes and one diagnostic line, zero getter calls, run never called", async () => {
 		for (const [agpCode, proxyCode] of [["NO_ROUTE", null], [null, "key-mismatch"]]) {
 			const fields = { ending: "not-delivered", agpCode, proxyCode };
 			for (const form of GETTER_FORMS) {
-				for (const r of await preparedInProcess(() => gettersEnding(fields, form, ["extra", "invocation", "earlierAttemptsUncertain", "answer"]))) {
-					assert.deepEqual([r.status, r.runs, r.stderr], [3, 0, ""], `${form} ${agpCode}`);
-					assert.equal(r.stdout, preparedRecord(r.json, r.stdout, agpCode, proxyCode), form);
-					assert.deepEqual(r.made.reads, { ending: 1, agpCode: 1, proxyCode: 1 }, `${form}: ending, then agpCode and proxyCode, each read once`);
-					assert.deepEqual(r.made.touched, [], `${form}: no other field touched`);
+				for (const r of await preparedInProcess(() => gettersEnding(fields, form, ["extra"]))) {
+					assert.deepEqual([r.status, r.runs], [3, 0], `${form} ${agpCode}`);
+					assert.match(r.stderr, NEITHER, form);
+					assert.equal(r.stdout, preparedRecord(r.json, r.stdout, null, null), form);
+					assert.deepEqual(r.made.reads, {}, `${form}: no getter called`);
+					assert.deepEqual(r.made.touched, [], `${form}: no field touched`);
 				}
 			}
 			for (const form of DATA_FORMS) {
 				for (const r of await preparedInProcess(() => ({ value: dataEnding(fields, form) }))) {
-					assert.deepEqual([r.status, r.runs, r.stderr], [3, 0, ""], form);
-					assert.equal(r.stdout, preparedRecord(r.json, r.stdout, agpCode, proxyCode), form);
+					assert.deepEqual([r.status, r.runs], [3, 0], form);
+					assert.match(r.stderr, NEITHER, form);
+					assert.equal(r.stdout, preparedRecord(r.json, r.stdout, null, null), form);
 				}
 			}
 		}
 	});
 
-	test("an object that is no not-delivered ending, or one whose getter throws or gives a promise: not delivered with null codes and one diagnostic line, run never called, no rejection escaping", async () => {
+	test("an object that is no not-delivered ending - an extra field, a getter that would throw or give a promise, a native promise in a field, a non-native thenable: not delivered with null codes and one diagnostic line, no getter or then called, run never called, no rejection escaping", async () => {
 		const nd = { ending: "not-delivered", agpCode: "NO_ROUTE", proxyCode: null };
+		const calls = [];
+		/** A plain object holding `fields`, with `name` an own enumerable getter recording each call. */
+		const getter = (name, gives) => ({ value: Object.defineProperty({ ...nd }, name, { enumerable: true, get() {
+			calls.push(name);
+			if (gives === "throws") throw new Error(`the ${name} getter threw`);
+			return Promise.reject(new Error(`the ${name} getter's promise rejected`));
+		} }) });
 		await noRejectionEscapes(async () => {
 			for (const [make, diagnostic] of [
-				[() => ({ value: dataEnding({ ending: "answered", answer: 1 }, "class-instance") }), "prepare settled to an object whose ending is \"answered\", neither ready nor a not-delivered ending"],
-				[() => oneGetterEnding(nd, "ending", "throws"), "prepare settled to what could not be read: Error: the ending getter threw"],
-				[() => oneGetterEnding(nd, "agpCode", "throws"), "prepare settled to what could not be read: Error: the agpCode getter threw"],
-				[() => oneGetterEnding(nd, "ending", "promise"), "prepare settled to an object whose ending is <a promise>, neither ready nor a not-delivered ending"],
-				[() => oneGetterEnding(nd, "proxyCode", "promise"), "prepare settled to an object whose ending is \"not-delivered\" and whose proxyCode is <a promise>, neither ready nor a not-delivered ending"],
+				[() => ({ value: dataEnding({ ending: "answered", answer: 1 }, "class-instance") }), neither('{"ending": "answered", "answer": 1}')],
+				[() => ({ value: { ...nd, extra: true } }), neither('{"ending": "not-delivered", "agpCode": "NO_ROUTE", "proxyCode": null, "extra": true}')],
+				[() => getter("ending", "throws"), neither('{"ending": <getter>, "agpCode": "NO_ROUTE", "proxyCode": null}')],
+				[() => getter("agpCode", "throws"), neither('{"ending": "not-delivered", "agpCode": <getter>, "proxyCode": null}')],
+				[() => getter("ending", "promise"), neither('{"ending": <getter>, "agpCode": "NO_ROUTE", "proxyCode": null}')],
+				[() => getter("proxyCode", "promise"), neither('{"ending": "not-delivered", "agpCode": "NO_ROUTE", "proxyCode": <getter>}')],
+				[() => ({ value: { ...nd, proxyCode: Promise.reject(new Error("the proxyCode promise rejected")) } }), neither('{"ending": "not-delivered", "agpCode": "NO_ROUTE", "proxyCode": <a promise>}')],
+				[() => ({ value: { ...nd, invocation: { inner: [Promise.reject(new Error("the invocation's inner promise rejected"))] } } }), neither('{"ending": "not-delivered", "agpCode": "NO_ROUTE", "proxyCode": null, "invocation": {"inner": [<a promise>]}}')],
+				[() => ({ value: { ...nd, then(resolve) { calls.push("then"); resolve("ready"); } } }), neither('{"ending": "not-delivered", "agpCode": "NO_ROUTE", "proxyCode": null, "then": <a function>}')],
+				[() => ({ value: { then(resolve) { calls.push("then"); resolve("ready"); } } }), neither('{"then": <a function>}')],
 			]) {
 				for (const r of await preparedInProcess(make)) {
 					assert.deepEqual([r.status, r.runs, r.stderr], [3, 0, `diagnostic: ${diagnostic}\n`]);
@@ -372,20 +411,34 @@ describe("OC3 - what prepare settles to: the string ready, or a not-delivered en
 				}
 			}
 		});
+		assert.deepEqual(calls, [], "no getter and no then called");
 	});
 
-	test("prepare rejecting or throwing an error whose name is itself, whose message is itself, or which holds a value that holds it, and one too long for a line: not delivered with null codes and one finite diagnostic line, run never called, through the process adapter", async () => {
-		const cases = [...["name-itself", "message-itself", "holds-its-holder"].flatMap((error) => [{ error, rejects: true }, { error, rejects: false }]), { error: "long-message", rejects: true }];
+	test("prepare rejecting or throwing an error whose own message is itself, which holds a value that holds it, whose own name exceeds 1000 characters beside a rejected promise in another own property, and one too long for a line: not delivered with null codes and one finite diagnostic line, no unhandled rejection, run never called, through the process adapter", async () => {
+		const cases = [...["name-itself", "message-itself", "holds-its-holder", "long-name-rejected-message", "long-name-rejected-detail", "long-name-rejecting-getter"].flatMap((error) => [{ error, rejects: true }, { error, rejects: false }]), { error: "long-message", rejects: true }];
 		for (const fails of cases) {
+			// An unhandled rejection would end the child with status 1 before its ending is written.
 			const both = await bothForms(["read", "--name", "a"], { prepare: { fails }, run: answered });
 			const line = cut(`diagnostic: prepare failed: ${CYCLIC_ERRORS[fails.error].said}`);
-			if (fails.error === "long-message") assert.equal(line.length, 1003, "cut at 1000 characters, ... added");
+			if (fails.error.startsWith("long-")) assert.equal(line.length, 1003, "cut at 1000 characters, ... added");
 			for (const r of [both.json, both.plain]) {
 				assert.deepEqual([r.status, r.signal, r.stderr], [3, null, `${line}\n`], `${fails.error} ${fails.rejects ? "rejects" : "throws"}`);
 				assert.ok(!events(r).includes("run"), "run is never called");
 				assert.equal(r.stdout, preparedRecord(r === both.json, r.stdout, null, null));
 			}
 		}
+		// In this process too: no rejection escapes, for each long-named error thrown or rejected.
+		await noRejectionEscapes(async () => {
+			for (const error of ["long-name-rejected-message", "long-name-rejected-detail", "long-name-rejecting-getter"]) {
+				for (const rejects of [true, false]) {
+					const decl = fixtureDeclaration({});
+					decl.client = { prepare: () => { const e = CYCLIC_ERRORS[error].make(); if (rejects) return Promise.reject(e); throw e; } };
+					const err = [];
+					const status = await within(declareProgram(decl).run({ args: ["read", "--name", "a", "--json"], env: BASE_ENV, stdout: () => undefined, stderr: (t) => err.push(t) }), error);
+					assert.deepEqual([status, err], [3, [`${cut(`diagnostic: prepare failed: ${CYCLIC_ERRORS[error].said}`)}\n`]], `${error} ${rejects}`);
+				}
+			}
+		});
 	});
 
 	test("each of these settling after an interruption while preparing leaves the interruption's report and status 1 alone, reaches nothing, and lets no rejection escape", async () => {

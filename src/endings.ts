@@ -8,9 +8,10 @@
  * and `repeat`. The call layer's `attempt` is not among them.
  */
 import type { JsonValue } from "@apnex/operation-call";
-import { isObject, readFields, readJson } from "./client-value.js";
+import { readCallEnding } from "@apnex/operation-call";
+import { observePromises } from "@apnex/shape-check";
 import type { Flags } from "./declaration-types.js";
-import { copyJson, describe, writeJson } from "./value-text.js";
+import { describe, DIAGNOSTIC_LIMIT, writeJson } from "./value-text.js";
 import { repeatLine } from "./repeat.js";
 
 /** The exit status of each ending, and of a command refused before anything was invoked (OC4). */
@@ -26,68 +27,26 @@ export type Ending =
 	| { readonly ending: "not-delivered"; readonly agpCode: string | null; readonly proxyCode: string | null; readonly earlierAttemptsUncertain: boolean }
 	| { readonly ending: "unknown"; readonly reason: string; readonly agpCode: string | null; readonly deliveryReport: "delivered" | "unknown" | null };
 
-/** The fields each kind of ending declares in the caller interface, besides `ending` (zorg's target, EM12). */
-const KIND_FIELDS: ReadonlyMap<unknown, readonly string[]> = new Map([
-	["answered", ["answer"]],
-	["refused", ["refusal"]],
-	["not-delivered", ["agpCode", "proxyCode", "earlierAttemptsUncertain"]],
-	["unknown", ["reason", "agpCode", "deliveryReport"]],
-]);
-
-/** The fields every ending declares, read after `ending` and before its kind's own. */
-const ADDRESS_FIELDS = ["invocation", "attempt", "operation"] as const;
-
-const codeOrNull = (value: unknown): value is string | null => value === null || typeof value === "string";
-
 type Read = { readonly ok: true; readonly ending: Ending } | { readonly ok: false; readonly why: string };
 
-/** What run returned is no ending, and why. */
-const malformed = (why: string): Read => ({ ok: false, why });
-
-/** Reading what run returned threw, which ended the reading. */
-const unreadable = (threw: unknown): Read => malformed(`run returned what could not be read as an ending: ${describe(threw, true)}`);
-
 /**
- * Reads what `run` settled to as a call layer's ending, or says why it is none; never throws. `ending` is
- * read once, then once each the fields its kind declares (client-value.ts); only an answer or a refusal is
- * copied as a JSON value. Every diagnostic is written from what was read.
+ * Reads what `run` settled to as a call layer's ending, through operation-call's `readCallEnding` (zorg's
+ * D54, D55): plain data only, running none of its code, holding exactly the fields of one kind of ending the
+ * caller interface gives. Anything it refuses has its native promises observed, and is described from its
+ * own data descriptors only; never throws.
  */
 export function readEnding(value: unknown): Read {
-	if (!isObject(value)) return malformed(`run returned ${describe(value)}, not an ending`);
-	const first = readFields(value, ["ending"]);
-	if ("threw" in first) return unreadable(first.threw);
-	const ending = first.fields.get("ending");
-	const names = KIND_FIELDS.get(ending);
-	if (names === undefined) return malformed(`run returned an ending of ${describe(ending)}, not answered, refused, not-delivered or unknown`);
-	const read = readFields(value, [...ADDRESS_FIELDS, ...names]);
-	if ("threw" in read) return unreadable(read.threw);
-	const field = (name: string): unknown => read.fields.get(name);
-	switch (ending) {
-		case "answered":
-		case "refused": {
-			const name = ending === "answered" ? "answer" : "refusal";
-			const copied = readJson(field(name), name);
-			if ("threw" in copied) return unreadable(copied.threw);
-			if (!("json" in copied)) return malformed(`run returned ${ending === "answered" ? "an answered" : "a refused"} ending whose ${name} is no JSON value: ${"itself" in copied ? `${copied.at} holds itself` : `${copied.at} is ${describe(copied.value)}`}`);
-			if (ending === "answered") return { ok: true, ending: { ending, answer: copied.json } };
-			const refusal = copied.json;
-			if (refusal === null || typeof refusal !== "object" || Array.isArray(refusal)) return malformed("run returned a refused ending with no refusal record");
-			return { ok: true, ending: { ending, refusal } };
-		}
-		case "not-delivered": {
-			const [agpCode, proxyCode, earlierAttemptsUncertain] = [field("agpCode"), field("proxyCode"), field("earlierAttemptsUncertain")];
-			if (!codeOrNull(agpCode) || !codeOrNull(proxyCode) || typeof earlierAttemptsUncertain !== "boolean") {
-				return malformed("run returned a not-delivered ending without agpCode, proxyCode and earlierAttemptsUncertain");
-			}
-			return { ok: true, ending: { ending, agpCode, proxyCode, earlierAttemptsUncertain } };
-		}
-		default: {
-			const [reason, agpCode, deliveryReport] = [field("reason"), field("agpCode"), field("deliveryReport")];
-			if (typeof reason !== "string" || !codeOrNull(agpCode) || !(deliveryReport === null || deliveryReport === "delivered" || deliveryReport === "unknown")) {
-				return malformed("run returned an unknown ending without reason, agpCode and deliveryReport");
-			}
-			return { ok: true, ending: { ending: "unknown", reason, agpCode, deliveryReport } };
-		}
+	const read = readCallEnding(value);
+	if (!read.ok) {
+		observePromises(value, DIAGNOSTIC_LIMIT);
+		return { ok: false, why: `run returned ${describe(value)}, not an ending the caller interface gives, read as plain data` };
+	}
+	const ending = read.ending;
+	switch (ending.ending) {
+		case "answered": return { ok: true, ending: { ending: "answered", answer: ending.answer } };
+		case "refused": return { ok: true, ending: { ending: "refused", refusal: ending.refusal as unknown as JsonValue } };
+		case "not-delivered": return { ok: true, ending: { ending: "not-delivered", agpCode: ending.agpCode, proxyCode: ending.proxyCode, earlierAttemptsUncertain: ending.earlierAttemptsUncertain } };
+		case "unknown": return { ok: true, ending: { ending: "unknown", reason: ending.reason, agpCode: ending.agpCode, deliveryReport: ending.deliveryReport } };
 	}
 }
 
@@ -132,7 +91,8 @@ export function printEnding(ending: Ending, context: RecordContext & { readonly 
 		if (name === "answer") {
 			const worded = context.word === undefined ? undefined : wordAnswer(context.word, value, context.flags);
 			if (worded !== undefined && worded.ok) {
-				lines.push(...worded.text.replace(/\n$/, "").split("\n"));
+				// One piece, however many lines it holds: no call takes an argument per line.
+				lines.push(worded.text.replace(/\n$/, ""));
 				continue;
 			}
 			if (worded !== undefined) diagnostic = `diagnostic: the answer could not be worded, so it is printed as JSON: ${worded.why}`;
@@ -146,17 +106,19 @@ export function printEnding(ending: Ending, context: RecordContext & { readonly 
 
 /**
  * The application's wording of an answer: the text its `word` returned, or why there is none - it threw, or
- * returned what is no text. What it threw is never taken as the wording; it is described as it is met, as
- * is anything else it returned, so a promise thrown or returned is consumed and its rejection handled here. It is given
- * its own copy of the answer, so it changes nothing printed.
+ * returned what is no text. What it threw is never taken as the wording; what it threw or returned otherwise
+ * has its native promises observed, and is described from its own data descriptors only. It is given the
+ * answer as `readCallEnding` read it, deeply frozen, so it changes nothing printed.
  */
 function wordAnswer(word: Wording, answer: JsonValue, flags: Flags): { readonly ok: true; readonly text: string } | { readonly ok: false; readonly why: string } {
 	let returned: unknown;
 	try {
-		returned = word(copyJson(answer), flags);
+		returned = word(answer, flags);
 	} catch (error) {
+		observePromises(error, DIAGNOSTIC_LIMIT);
 		return { ok: false, why: `word threw ${describe(error, true)}` };
 	}
 	if (typeof returned === "string") return { ok: true, text: returned };
+	observePromises(returned, DIAGNOSTIC_LIMIT);
 	return { ok: false, why: `word returned ${describe(returned)}, not text` };
 }

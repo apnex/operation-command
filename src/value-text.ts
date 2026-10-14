@@ -1,17 +1,19 @@
 /**
- * Values as text: a JSON value written as JSON text, a JSON value copied, and a diagnostic line describing
- * what the application threw or gave (OC4). Every walk keeps its own stack, so depth alone never overflows the
- * call stack, and every copied object is built by defining own data properties, so a member named
- * `__proto__` stays a member.
+ * Values as text: a JSON value written as JSON text, and a diagnostic line describing what the application
+ * threw or gave (OC4). Every walk keeps its own stack, so depth alone never overflows the call stack.
  *
- * A diagnostic describes a value from what is read of it once, as it is met, and never reads a property or
- * calls a conversion again: a string, a number, a boolean, null, undefined and a BigInt are written as they
- * are; an error as its name, a colon and its message, each read once; anything else as what it is, such as
- * `<a promise>` or `<an object>`, its members unread. An error met a second time on the path being described
- * is written `<cycle>`. The line is cut at 1000 characters with `...` added, and is always one line.
+ * A diagnostic first observes every native promise the value holds, through shape-check's `observePromises`,
+ * so no later cut of the text leaves one unobserved; it then describes the value from its own data
+ * descriptors only (zorg's D54, D55), never invoking a getter, a setter or a conversion: a string, a number,
+ * a boolean, null, undefined and a BigInt are written as they are; an error as its own `name`, if it has one
+ * as an own data property, a colon and its own `message` - never the name it inherits; a promise, a function
+ * and a symbol as what they are; an array or another object as its own data members, a getter written
+ * `<getter>`. A value met a second time on the path being described is written `<cycle>`, at most 1000
+ * values are visited, and the line, its control characters made spaces, is cut at 1000 Unicode code points
+ * with `...` added, so it is always one finite line.
  */
 import type { JsonValue } from "@apnex/operation-call";
-import { define, observe } from "./client-value.js";
+import { observePromises } from "@apnex/shape-check";
 
 /** The most characters a diagnostic line holds before it is cut, and the most values a description meets. */
 export const DIAGNOSTIC_LIMIT = 1000;
@@ -49,51 +51,59 @@ export function writeJson(value: JsonValue): string {
 	return out.join("");
 }
 
-/** A deep copy of a JSON value, each object's members defined as its own, whatever their names. */
-export function copyJson(value: JsonValue): JsonValue {
-	const copyOne = (item: JsonValue): JsonValue => item === null || typeof item !== "object" ? item : Array.isArray(item) ? new Array<JsonValue>(item.length) : {};
-	const root = copyOne(value);
-	const stack: { readonly from: JsonValue; readonly to: JsonValue }[] = [{ from: value, to: root }];
-	while (stack.length > 0) {
-		const { from, to } = stack.pop() as { readonly from: JsonValue; readonly to: JsonValue };
-		if (from === null || typeof from !== "object" || to === null || typeof to !== "object") continue;
-		const names: (string | number)[] = Array.isArray(from) ? Array.from({ length: from.length }, (_, i) => i) : Object.keys(from);
-		for (const name of names) {
-			const member = (from as { readonly [key: string | number]: JsonValue })[name] as JsonValue;
-			const made = copyOne(member);
-			define(to, name, made);
-			stack.push({ from: member, to: made });
-		}
+/** True for a native promise; a Proxy's trap that throws while asked makes it none. */
+function isPromise(value: object): boolean {
+	try {
+		return value instanceof Promise;
+	} catch {
+		return false;
 	}
-	return root;
 }
 
-/** Whether a prototype chain, from a prototype already read, holds `wanted`; walked a bounded number of steps. */
-function inherits(first: unknown, wanted: object): boolean {
-	let p = first;
+/** Whether a value's prototype chain holds `wanted`, walked a bounded number of steps. */
+function inherits(value: object, wanted: object): boolean {
+	let p: unknown = Object.getPrototypeOf(value);
 	for (let step = 0; step < DIAGNOSTIC_LIMIT && p !== null && typeof p === "object"; step++, p = Object.getPrototypeOf(p)) if (p === wanted) return true;
 	return false;
 }
 
-type Part = { readonly text: string } | { readonly value: unknown; readonly said: boolean } | { readonly threw: unknown };
+/** An own property as a diagnostic reads it: its data value, or the fact that it is a getter or setter. */
+type Own = { readonly name: string; readonly value: unknown } | { readonly name: string; readonly accessor: true };
 
-/** One field of an error, read once: its value, said as a diagnostic says it, or what reading it threw. */
-function readPart(error: object, name: "name" | "message"): Part {
+/**
+ * The own string-named properties of an object, read through their descriptors only, at most
+ * DIAGNOSTIC_LIMIT of them, each data value's native promise observed as it is read; or undefined when a
+ * Proxy's trap threw.
+ */
+function ownProperties(item: object): { readonly own: readonly Own[]; readonly more: boolean } | undefined {
 	try {
-		return { value: (error as { readonly [key: string]: unknown })[name], said: true };
-	} catch (threw) {
-		return { threw };
+		const names = Object.getOwnPropertyNames(item);
+		const own: Own[] = [];
+		for (const name of names) {
+			if (own.length >= DIAGNOSTIC_LIMIT) break;
+			const descriptor = Object.getOwnPropertyDescriptor(item, name);
+			if (descriptor === undefined) continue;
+			if (Object.hasOwn(descriptor, "value")) {
+				observePromises(descriptor.value, 0);
+				own.push({ name, value: descriptor.value });
+			} else own.push({ name, accessor: true });
+		}
+		return { own, more: own.length < names.length };
+	} catch {
+		return undefined;
 	}
 }
 
 /**
- * Describes a value for a diagnostic, observing each value it meets. `said` writes a string as it is, as
- * what was thrown is said; otherwise a string is written as JSON, as a value given is. The description stops
- * with `...` once it is longer than a diagnostic line holds, or has met as many values as that.
+ * Describes a value for a diagnostic. Every native promise it holds is observed first, within the 1000
+ * values a description may meet, and each own data value read is observed again as it is read; then the
+ * value is written from its own data descriptors. `said` writes a string as it is, as what was thrown is
+ * said; otherwise a string is written as JSON, as a value given is. The description stops with `...` once it
+ * is longer than a diagnostic line holds, or has visited as many values as that.
  */
 export function describe(value: unknown, said = false): string {
-	type Entry = Part | { readonly leave: object };
-	const parts = new Map<object, readonly Part[]>();
+	observePromises(value, DIAGNOSTIC_LIMIT);
+	type Entry = { readonly text: string } | { readonly value: unknown; readonly said: boolean } | { readonly leave: object };
 	const path = new Set<object>();
 	const out: string[] = [];
 	let size = 0;
@@ -105,55 +115,79 @@ export function describe(value: unknown, said = false): string {
 	};
 	const stack: Entry[] = [{ value, said }];
 	while (stack.length > 0) {
-		if (size > DIAGNOSTIC_LIMIT || met > DIAGNOSTIC_LIMIT) {
+		// Past twice the limit in code units is past the limit in code points, so the line's cut always applies.
+		if (size > 2 * DIAGNOSTIC_LIMIT || met > DIAGNOSTIC_LIMIT) {
 			write("...");
 			break;
 		}
 		const entry = stack.pop() as Entry;
-		if ("text" in entry) write(entry.text);
-		else if ("leave" in entry) path.delete(entry.leave);
-		else if ("threw" in entry) stack.push({ text: ">" }, { value: entry.threw, said: true }, { text: "<threw " });
+		if ("text" in entry) {
+			write(entry.text);
+			continue;
+		}
+		if ("leave" in entry) {
+			path.delete(entry.leave);
+			continue;
+		}
+		const item = entry.value;
+		met++;
+		if (typeof item === "string") write(entry.said ? item : JSON.stringify(item.length > 2 * DIAGNOSTIC_LIMIT ? item.slice(0, 2 * DIAGNOSTIC_LIMIT) : item));
+		else if (typeof item === "bigint") write(`${item}n`);
+		else if (typeof item === "symbol") write("<a symbol>");
+		else if (typeof item === "function") write("<a function>");
+		else if (item === null || typeof item !== "object") write(String(item));
+		else if (path.has(item)) write("<cycle>");
+		else if (isPromise(item)) write("<a promise>");
 		else {
-			met++;
-			const item = entry.value;
-			observe(item);
-			if (typeof item === "string") write(entry.said ? item : JSON.stringify(item));
-			else if (typeof item === "bigint") write(`${item}n`);
-			else if (typeof item === "symbol") write("<a symbol>");
-			else if (typeof item === "function") write("<a function>");
-			else if (item === null || typeof item !== "object") write(String(item));
-			else if (path.has(item)) write("<cycle>");
-			else {
-				let kind: "error" | "promise" | "object";
-				try {
-					const prototype: unknown = Object.getPrototypeOf(item);
-					kind = inherits(prototype, Error.prototype) ? "error" : inherits(prototype, Promise.prototype) ? "promise" : "object";
-				} catch (threw) {
-					stack.push({ threw });
-					continue;
-				}
-				if (kind !== "error") {
-					write(kind === "promise" ? "<a promise>" : "<an object>");
-					continue;
-				}
-				// An error's name and message are read the first time it is met, and only then.
-				let read = parts.get(item);
-				if (read === undefined) {
-					read = [readPart(item, "name"), { text: ": " }, readPart(item, "message")];
-					parts.set(item, read);
-				}
-				path.add(item);
-				stack.push({ leave: item });
-				for (let i = read.length - 1; i >= 0; i--) stack.push(read[i] as Part);
+			let kind: "error" | "array" | "object";
+			try {
+				kind = Array.isArray(item) ? "array" : inherits(item, Error.prototype) ? "error" : "object";
+			} catch {
+				write("<unreadable>");
+				continue;
 			}
+			const read = ownProperties(item);
+			if (read === undefined) {
+				write("<unreadable>");
+				continue;
+			}
+			const parts: Entry[] = [];
+			const member = (own: Own): Entry => ("value" in own ? { value: own.value, said: false } : { text: "<getter>" });
+			if (kind === "error") {
+				// Only the error's own name and message, each from its own data descriptor; an inherited name is never read.
+				const name = read.own.find((own) => own.name === "name");
+				const message = read.own.find((own) => own.name === "message");
+				if (name !== undefined) parts.push("value" in name ? { value: name.value, said: true } : { text: "<getter>" });
+				if (name !== undefined && message !== undefined) parts.push({ text: ": " });
+				if (message !== undefined) parts.push("value" in message ? { value: message.value, said: true } : { text: "<getter>" });
+				if (name === undefined && message === undefined) parts.push({ text: "<an error>" });
+			} else {
+				const members = kind === "array" ? read.own.filter((own) => own.name !== "length") : read.own;
+				parts.push({ text: kind === "array" ? "[" : "{" });
+				members.forEach((own, i) => {
+					if (i > 0) parts.push({ text: ", " });
+					if (kind === "object") parts.push({ text: `${JSON.stringify(own.name)}: ` });
+					parts.push(member(own));
+				});
+				if (read.more) parts.push({ text: members.length > 0 ? ", ..." : "..." });
+				parts.push({ text: kind === "array" ? "]" : "}" });
+			}
+			path.add(item);
+			stack.push({ leave: item });
+			for (let i = parts.length - 1; i >= 0; i--) stack.push(parts[i] as Entry);
 		}
 	}
 	return out.join("");
 }
 
+/** Text as one line: each run of control characters and line breaks a space. */
+export function singleLine(text: string): string {
+	return text.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, " ");
+}
+
 /** A diagnostic as one line: each run of control characters and line breaks a space, cut at 1000 characters with `...` added. */
 export function diagnosticLine(text: string): string {
-	const line = text.replace(/[\u0000-\u001f\u007f\u2028\u2029]+/g, " ");
+	const line = singleLine(text);
 	const characters = Array.from(line);
 	return characters.length > DIAGNOSTIC_LIMIT ? `${characters.slice(0, DIAGNOSTIC_LIMIT).join("")}...` : line;
 }

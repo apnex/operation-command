@@ -34,7 +34,8 @@
     "docs:check": "tools/check-docs.sh"
   },
   "dependencies": {
-    "@apnex/operation-call": "file:../operation-call"
+    "@apnex/operation-call": "file:../operation-call",
+    "@apnex/shape-check": "file:../shape-check"
   },
   "devDependencies": {
     "@agp/core": "file:../agp/packages/core",
