@@ -5,16 +5,21 @@
  * settled value as it is, which the reading that follows (shape-check's `readPlainJson`, operation-call's
  * `readCallEnding`) judges as plain data, running none of its code.
  */
+import { observePromises } from "@apnex/shape-check";
 
 /** How a value settled: to a value, or with an error. */
 export type Settled = { readonly value: unknown } | { readonly error: unknown };
 
-/** True for a native promise; a Proxy's trap that throws while asked makes the value no promise. */
+/**
+ * True for a native promise; a Proxy's trap that throws while asked makes the value no promise, and what it
+ * threw has its native promises observed.
+ */
 function isNativePromise(value: unknown): value is Promise<unknown> {
 	if (value === null || typeof value !== "object") return false;
 	try {
 		return value instanceof Promise;
-	} catch {
+	} catch (error) {
+		observePromises(error);
 		return false;
 	}
 }

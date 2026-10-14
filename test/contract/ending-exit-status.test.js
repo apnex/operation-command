@@ -18,6 +18,8 @@ const BASE = ["publish", "--name", "a", "--summary", "it's \"quoted\""];
 
 const notEnding = (described) => `run returned ${described}, not an ending the caller interface gives, read as plain data`;
 const getterCode = '{"ending": "not-delivered", "agpCode": <getter>, "proxyCode": null, "earlierAttemptsUncertain": false}';
+// What a Proxy of attempt 5's F1 shows once its one rejected promise was handed back or thrown: its target's own fields.
+const proxiedAnswer = '{"ending": "answered", "invocation": "1791540000000-1234567890abcdef", "attempt": "1791540000000-1234567890abcdef.0123abcd", "operation": "create", "answer": {"ok": true}}';
 
 /** Each malformed run result and its diagnostic, written from own data descriptors: no getter, then or conversion runs. */
 const RUN_MALFORMED = Object.freeze({
@@ -34,6 +36,20 @@ const RUN_MALFORMED = Object.freeze({
 	"rejected-code": notEnding('{"ending": "not-delivered", "agpCode": <a promise>, "proxyCode": null, "earlierAttemptsUncertain": false}'),
 	"first-read-rejected-code": notEnding(getterCode),
 	"throwing-rejected-code": notEnding(getterCode),
+	"proxy-first-read-rejected-answer": notEnding(proxiedAnswer),
+	"proxy-trap-throws-rejected-answer": notEnding(proxiedAnswer),
+	// Its trap throws on every read, the diagnostic's own included, so the diagnostic cannot read it.
+	"proxy-trap-always-throws-rejected-answer": notEnding("<unreadable>"),
+	"proxy-prototype-trap-throws-rejected-answer": notEnding("<unreadable>"),
+});
+
+/** The Proxy results of attempt 5's F1: a whole answered ending, a rejected promise as answer's descriptor value on its first read only, or thrown by the descriptor trap, once or on every read, or by the prototype trap. */
+const PROXIED = Object.freeze(["proxy-first-read-rejected-answer", "proxy-trap-throws-rejected-answer", "proxy-trap-always-throws-rejected-answer", "proxy-prototype-trap-throws-rejected-answer"]);
+/** The wordings of attempt 5's F1: word throws a Proxy that does the same to its message, each with what its diagnostic says it threw. */
+const PROXIED_WORDS = Object.freeze({
+	"throws-proxy-first-read-rejected": `{"message": "word's proxy"}`,
+	"throws-proxy-trap-throws-rejected": `{"message": "word's proxy"}`,
+	"throws-proxy-trap-always-throws-rejected": "<unreadable>",
 });
 
 /** Runs the fixture's publish with an ending, with --json and without. */
@@ -287,6 +303,60 @@ describe("OC4 - each ending's status, its JSON object whole and its plain form",
 		const json = await held([...BASE, "--json"], scenario);
 		assert.deepEqual([json.status, json.signal, json.stderr], [0, null, ""], "the JSON form does not word the answer");
 		assert.equal(json.stdout, `${JSON.stringify({ ending: "answered", operation: "create", invocation: JSON.parse(json.stdout).invocation, answer })}\n`);
+	});
+
+	test("a run result that is a Proxy handing back a rejected promise as a descriptor's value on its first read only, or whose descriptor or prototype trap throws a rejected promise, and a word that throws such a Proxy: that very promise is observed, so in this process and with standard output's write held the command exits 4 with its repeat, or 0 for word, with one diagnostic line", async () => {
+		const answer = { safe: true };
+		const worded = (why) => `diagnostic: the answer could not be worded, so it is printed as JSON: ${why}\n`;
+		// In this process, with --json and without: nothing escapes.
+		await noRejectionEscapes(async () => {
+			for (const malformed of PROXIED) {
+				for (const r of await returnedInProcess(() => ({ value: MALFORMED[malformed]() }))) {
+					assert.deepEqual([r.status, r.stderr], [4, `diagnostic: ${RUN_MALFORMED[malformed]}\n`], `${malformed} ${r.json ? "--json" : "plain"}`);
+					assert.equal(r.stdout, printed(RUN_FAILED_ENDING, r.json, r.invocation), malformed);
+				}
+			}
+			for (const [word, thrown] of Object.entries(PROXIED_WORDS)) {
+				for (const json of [true, false]) {
+					const decl = fixtureDeclaration({ word, run: { ending: { ending: "answered", answer } } });
+					const out = [];
+					const err = [];
+					const status = await within(declareProgram(decl).run({ args: [...BASE, ...(json ? ["--json"] : [])], env: BASE_ENV, stdout: (t) => out.push(t), stderr: (t) => err.push(t) }), word);
+					const stdout = out.join("");
+					// The JSON form never words the answer, so word, and its Proxy, are never reached.
+					assert.deepEqual([status, err.join("")], [0, json ? "" : worded(`word threw ${thrown}`)], `${word} ${json ? "--json" : "plain"}`);
+					assert.equal(stdout, printed({ ending: "answered", answer }, json, json ? JSON.parse(stdout).invocation : plainFacts(stdout).invocation));
+				}
+			}
+		});
+		// Through the process adapter, with no rejection listener: standard output's write is held until the command
+		// received SIGINT, sent well after the ending was written, so a rejection left unhandled would end it with status 1.
+		const held = async (args, scenario) => {
+			const command = startFixture(args, { env: BASE_ENV, scenario: { ...scenario, holdWrite: { until: ["SIGINT"] } } });
+			await command.waitFor("write-held");
+			await sleep(200);
+			command.signal("SIGINT");
+			const r = await command.ended;
+			assert.ok(events(r).includes("signal-received") && events(r).includes("write-released"), "the process lived until the held write was released");
+			return r;
+		};
+		for (const malformed of PROXIED) {
+			for (const json of [true, false]) {
+				const r = await held([...BASE, ...(json ? ["--json"] : [])], { plainAnswer: true, run: { malformed } });
+				assert.deepEqual([r.status, r.signal, r.stderr], [4, null, `diagnostic: ${RUN_MALFORMED[malformed]}\n`], `${malformed} ${json ? "--json" : "plain"}`);
+				assert.equal(r.records.filter((x) => x.event === "run").length, 1);
+				assert.equal(r.stdout, printed(RUN_FAILED_ENDING, json, json ? JSON.parse(r.stdout).invocation : plainFacts(r.stdout).invocation));
+			}
+		}
+		for (const [word, thrown] of Object.entries(PROXIED_WORDS)) {
+			const scenario = { word, prepare: { settle: "ready" }, run: { ending: { ending: "answered", answer } } };
+			const plain = await held(BASE, scenario);
+			assert.deepEqual([plain.status, plain.signal, plain.stderr], [0, null, worded(`word threw ${thrown}`)], word);
+			assert.equal(plain.stdout, printed({ ending: "answered", answer }, false, plainFacts(plain.stdout).invocation));
+			const json = await held([...BASE, "--json"], scenario);
+			assert.deepEqual([json.status, json.signal, json.stderr], [0, null, ""], "the JSON form does not word the answer");
+			assert.equal(json.stdout, printed({ ending: "answered", answer }, true, JSON.parse(json.stdout).invocation));
+		}
 	});
 
 	test("a usage error, with --json and without, leaves standard output empty and exits 1", async () => {
@@ -604,9 +674,9 @@ describe("OC4 - an ending read as plain data; a diagnostic that always ends", { 
 		assert.deepEqual(conversions, [], "no conversion called");
 	});
 
-	test("run and word throwing an error whose own name exceeds 1000 characters beside a rejected promise in another own property: one diagnostic line cut at 1000 characters and zero unhandled rejections, in this process", async () => {
+	test("run and word throwing an error whose own name or own message exceeds 1000 characters beside a rejected promise in another own property: one diagnostic line cut at 1000 characters and zero unhandled rejections, in this process", async () => {
 		await noRejectionEscapes(async () => {
-			for (const error of ["long-name-rejected-message", "long-name-rejected-detail", "long-name-rejecting-getter"]) {
+			for (const error of ["long-name-rejected-message", "long-name-rejected-detail", "long-name-rejecting-getter", "long-message-rejected-detail"]) {
 				const { said } = CYCLIC_ERRORS[error];
 				for (const rejects of [false, true]) {
 					for (const json of [true, false]) {
@@ -630,7 +700,7 @@ describe("OC4 - an ending read as plain data; a diagnostic that always ends", { 
 		});
 	});
 
-	test("run and word throwing an error whose own name is itself, whose own message is itself, which holds a value that holds it, whose own name exceeds 1000 characters beside a rejected promise in another own property, and one too long for a line: the run unknown with run-failed and its repeat, the word's answer written as JSON, each with one diagnostic line, cut at 1000 characters, through the process adapter", async () => {
+	test("run and word throwing an error whose own name is itself, whose own message is itself, which holds a value that holds it, whose own name or own message exceeds 1000 characters beside a rejected promise in another own property, and one too long for a line: the run unknown with run-failed and its repeat, the word's answer written as JSON, each with one diagnostic line, cut at 1000 characters, through the process adapter", async () => {
 		const unknown = { ending: "unknown", reason: "run-failed", agpCode: null, deliveryReport: null };
 		for (const [error, { said }] of Object.entries(CYCLIC_ERRORS)) {
 			// An unhandled rejection would end the child with status 1 before its ending is written.

@@ -51,11 +51,12 @@ export function writeJson(value: JsonValue): string {
 	return out.join("");
 }
 
-/** True for a native promise; a Proxy's trap that throws while asked makes it none. */
+/** True for a native promise; a Proxy's trap that throws while asked makes it none, what it threw observed. */
 function isPromise(value: object): boolean {
 	try {
 		return value instanceof Promise;
-	} catch {
+	} catch (err) {
+		observePromises(err);
 		return false;
 	}
 }
@@ -73,7 +74,7 @@ type Own = { readonly name: string; readonly value: unknown } | { readonly name:
 /**
  * The own string-named properties of an object, read through their descriptors only, at most
  * DIAGNOSTIC_LIMIT of them, each data value's native promise observed as it is read; or undefined when a
- * Proxy's trap threw.
+ * Proxy's trap threw, after what it threw is observed.
  */
 function ownProperties(item: object): { readonly own: readonly Own[]; readonly more: boolean } | undefined {
 	try {
@@ -89,7 +90,9 @@ function ownProperties(item: object): { readonly own: readonly Own[]; readonly m
 			} else own.push({ name, accessor: true });
 		}
 		return { own, more: own.length < names.length };
-	} catch {
+	} catch (err) {
+		// A Proxy's trap threw: what it threw is observed, in case it is a rejected promise.
+		observePromises(err);
 		return undefined;
 	}
 }
@@ -142,7 +145,8 @@ export function describe(value: unknown, said = false): string {
 			let kind: "error" | "array" | "object";
 			try {
 				kind = Array.isArray(item) ? "array" : inherits(item, Error.prototype) ? "error" : "object";
-			} catch {
+			} catch (err) {
+				observePromises(err);
 				write("<unreadable>");
 				continue;
 			}

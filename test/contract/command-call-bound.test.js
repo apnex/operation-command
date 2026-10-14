@@ -25,6 +25,8 @@ const only = (result, event) => {
 const NEITHER = /^diagnostic: prepare settled to [^\n]*, neither ready nor a not-delivered ending read as plain data\n$/;
 const neither = (described) => `prepare settled to ${described}, neither ready nor a not-delivered ending read as plain data`;
 const getterCode = '{"ending": "not-delivered", "agpCode": <getter>, "proxyCode": null, "earlierAttemptsUncertain": false}';
+// What a Proxy of attempt 5's F1 shows once its one rejected promise was handed back or thrown: its target's own fields.
+const proxiedCode = '{"ending": "not-delivered", "agpCode": "TIMEOUT", "proxyCode": null, "earlierAttemptsUncertain": false}';
 
 /** Each malformed prepare result and its diagnostic, written from own data descriptors: no getter, then or conversion runs. */
 const PREPARE_MALFORMED = Object.freeze({
@@ -41,7 +43,16 @@ const PREPARE_MALFORMED = Object.freeze({
 	"cyclic-answer": neither('{"ending": "answered", "answer": {"a": 1, "self": <cycle>}}'),
 	"first-read-rejected-code": neither(getterCode),
 	"throwing-rejected-code": neither(getterCode),
+	"proxy-first-read-rejected-code": neither(proxiedCode),
+	"proxy-trap-throws-rejected-code": neither(proxiedCode),
+	// Its trap throws on every read, the diagnostic's own included, so the diagnostic cannot read it.
+	"proxy-trap-always-throws-rejected-code": neither("<unreadable>"),
+	"proxy-prototype-trap-throws-rejected-code": neither("<unreadable>"),
+	"extra-field": neither('{"ending": "not-delivered", "agpCode": "NO_ROUTE", "proxyCode": null, "extra": true}'),
 });
+
+/** The Proxy results of attempt 5's F1: a rejected promise as a descriptor's value on its first read only, or thrown by the descriptor trap, once or on every read, or by the prototype trap. */
+const PROXIED = Object.freeze(["proxy-first-read-rejected-code", "proxy-trap-throws-rejected-code", "proxy-trap-always-throws-rejected-code", "proxy-prototype-trap-throws-rejected-code"]);
 
 /** Runs a scenario with --json and without, giving both results. */
 async function bothForms(args, scenario, env = BASE_ENV) {
@@ -233,6 +244,33 @@ describe("OC3 - preparing with the deadline on the injected clock port", { concu
 		}
 	});
 
+	test("a prepare result that is a Proxy handing back a rejected promise as a descriptor's value on its first read only, or whose descriptor or prototype trap throws a rejected promise: that very promise is observed, so in this process and with standard output's write held the command exits 3 with one diagnostic line, run never called", async () => {
+		// In this process, with --json and without: not delivered with null codes, the diagnostic exact, nothing escaping.
+		await noRejectionEscapes(async () => {
+			for (const malformed of PROXIED) {
+				for (const r of await preparedInProcess(() => ({ value: MALFORMED[malformed]() }))) {
+					assert.deepEqual([r.status, r.runs, r.stderr], [3, 0, `diagnostic: ${PREPARE_MALFORMED[malformed]}\n`], `${malformed} ${r.json ? "--json" : "plain"}`);
+					assert.equal(r.stdout, preparedRecord(r.json, r.stdout, null, null));
+				}
+			}
+		});
+		// Through the process adapter, with no rejection listener: standard output's write is held until the command
+		// received SIGINT, sent well after the ending was written, so a rejection left unhandled would end it with status 1.
+		for (const malformed of PROXIED) {
+			for (const json of [true, false]) {
+				const command = startFixture(["read", "--name", "a", ...(json ? ["--json"] : [])], { env: BASE_ENV, scenario: { prepare: { malformed }, run: answered, holdWrite: { until: ["SIGINT"] } } });
+				await command.waitFor("write-held");
+				await sleep(200);
+				command.signal("SIGINT");
+				const r = await command.ended;
+				assert.deepEqual([r.status, r.signal, r.stderr], [3, null, `diagnostic: ${PREPARE_MALFORMED[malformed]}\n`], `${malformed} ${json ? "--json" : "plain"}`);
+				assert.ok(events(r).includes("signal-received") && events(r).includes("write-released"), "the process lived until the held write was released");
+				assert.ok(!events(r).includes("run"), "run is never called");
+				assert.equal(r.stdout, preparedRecord(json, r.stdout, null, null));
+			}
+		}
+	});
+
 	test("a client that offers no prepare goes straight to run", async () => {
 		const result = await runFixture(["read", "--name", "a", "--json"], { env: BASE_ENV, scenario: { run: answered } });
 		assert.equal(result.status, 0);
@@ -414,8 +452,8 @@ describe("OC3 - what prepare settles to: the string ready, or a not-delivered en
 		assert.deepEqual(calls, [], "no getter and no then called");
 	});
 
-	test("prepare rejecting or throwing an error whose own message is itself, which holds a value that holds it, whose own name exceeds 1000 characters beside a rejected promise in another own property, and one too long for a line: not delivered with null codes and one finite diagnostic line, no unhandled rejection, run never called, through the process adapter", async () => {
-		const cases = [...["name-itself", "message-itself", "holds-its-holder", "long-name-rejected-message", "long-name-rejected-detail", "long-name-rejecting-getter"].flatMap((error) => [{ error, rejects: true }, { error, rejects: false }]), { error: "long-message", rejects: true }];
+	test("prepare rejecting or throwing an error whose own message is itself, which holds a value that holds it, whose own name or own message exceeds 1000 characters beside a rejected promise in another own property, and one too long for a line: not delivered with null codes and one finite diagnostic line, no unhandled rejection, run never called, through the process adapter", async () => {
+		const cases = [...["name-itself", "message-itself", "holds-its-holder", "long-name-rejected-message", "long-name-rejected-detail", "long-name-rejecting-getter", "long-message-rejected-detail"].flatMap((error) => [{ error, rejects: true }, { error, rejects: false }]), { error: "long-message", rejects: true }];
 		for (const fails of cases) {
 			// An unhandled rejection would end the child with status 1 before its ending is written.
 			const both = await bothForms(["read", "--name", "a"], { prepare: { fails }, run: answered });
@@ -427,15 +465,23 @@ describe("OC3 - what prepare settles to: the string ready, or a not-delivered en
 				assert.equal(r.stdout, preparedRecord(r === both.json, r.stdout, null, null));
 			}
 		}
-		// In this process too: no rejection escapes, for each long-named error thrown or rejected.
+		// In this process too, in both forms: no rejection escapes, for each long-named or long-messaged error thrown or rejected.
 		await noRejectionEscapes(async () => {
-			for (const error of ["long-name-rejected-message", "long-name-rejected-detail", "long-name-rejecting-getter"]) {
+			for (const error of ["long-name-rejected-message", "long-name-rejected-detail", "long-name-rejecting-getter", "long-message-rejected-detail"]) {
 				for (const rejects of [true, false]) {
-					const decl = fixtureDeclaration({});
-					decl.client = { prepare: () => { const e = CYCLIC_ERRORS[error].make(); if (rejects) return Promise.reject(e); throw e; } };
-					const err = [];
-					const status = await within(declareProgram(decl).run({ args: ["read", "--name", "a", "--json"], env: BASE_ENV, stdout: () => undefined, stderr: (t) => err.push(t) }), error);
-					assert.deepEqual([status, err], [3, [`${cut(`diagnostic: prepare failed: ${CYCLIC_ERRORS[error].said}`)}\n`]], `${error} ${rejects}`);
+					for (const json of [true, false]) {
+						let runs = 0;
+						const decl = fixtureDeclaration({});
+						decl.client = { prepare: () => { const e = CYCLIC_ERRORS[error].make(); if (rejects) return Promise.reject(e); throw e; } };
+						decl.commands = decl.commands.map((c) => c.local ? c : { ...c, run: () => { runs++; return { ending: "answered", answer: 1 }; } });
+						const out = [];
+						const err = [];
+						const status = await within(declareProgram(decl).run({ args: ["read", "--name", "a", ...(json ? ["--json"] : [])], env: BASE_ENV, stdout: (t) => out.push(t), stderr: (t) => err.push(t) }), error);
+						const line = cut(`diagnostic: prepare failed: ${CYCLIC_ERRORS[error].said}`);
+						assert.equal(line.length, 1003, "cut at 1000 characters, ... added");
+						assert.deepEqual([status, runs, err], [3, 0, [`${line}\n`]], `${error} ${rejects} ${json ? "--json" : "plain"}`);
+						assert.equal(out.join(""), preparedRecord(json, out.join(""), null, null));
+					}
 				}
 			}
 		});
@@ -447,7 +493,11 @@ describe("OC3 - what prepare settles to: the string ready, or a not-delivered en
 			...GETTER_FORMS.map((form) => () => ({ value: gettersEnding(nd, form, ["extra"]).value })),
 			...DATA_FORMS.map((form) => () => ({ value: dataEnding(nd, form) })),
 			() => ({ value: "ready" }),
+			// A plain not-delivered ending whose sole defect is an extra own data field (attempt 5's F2).
+			() => ({ value: { ...nd, extra: true } }),
 			() => ({ value: dataEnding({ ending: "answered", answer: 1 }, "class-instance") }),
+			// A Proxy handing back a rejected promise on its first descriptor read, or throwing one from its trap (attempt 5's F1).
+			...PROXIED.map((malformed) => () => ({ value: MALFORMED[malformed]() })),
 			() => ({ value: oneGetterEnding(nd, "agpCode", "throws").value }),
 			() => ({ value: oneGetterEnding(nd, "agpCode", "promise").value }),
 			...Object.values(CYCLIC_ERRORS).map((e) => () => ({ error: e.make() })),
@@ -477,7 +527,8 @@ describe("OC3 - what prepare settles to: the string ready, or a not-delivered en
 			}
 		});
 		// Through the process adapter: prepare settles once its signal fired, and the command's report is the interruption's alone.
-		for (const prepare of [{ untilAbort: true, fails: { error: "name-itself", rejects: true } }, { untilAbort: true, fails: { error: "holds-its-holder", rejects: false } }, { untilAbort: true, malformed: "throwing-rejected-code" }]) {
+		for (const prepare of [{ untilAbort: true, fails: { error: "name-itself", rejects: true } }, { untilAbort: true, fails: { error: "holds-its-holder", rejects: false } }, { untilAbort: true, malformed: "throwing-rejected-code" },
+			{ untilAbort: true, malformed: "extra-field" }, { untilAbort: true, fails: { error: "long-message-rejected-detail", rejects: true } }, ...PROXIED.map((malformed) => ({ untilAbort: true, malformed }))]) {
 			for (const json of [true, false]) {
 				const command = startFixture(["read", "--name", "a", ...(json ? ["--json"] : [])], { env: BASE_ENV, scenario: { prepare, run: answered } });
 				await command.waitFor("prepare");
