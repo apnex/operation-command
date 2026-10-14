@@ -51,16 +51,6 @@ export function writeJson(value: JsonValue): string {
 	return out.join("");
 }
 
-/** True for a native promise; a Proxy's trap that throws while asked makes it none, what it threw observed. */
-function isPromise(value: object): boolean {
-	try {
-		return value instanceof Promise;
-	} catch (err) {
-		observePromises(err);
-		return false;
-	}
-}
-
 /** Whether a value's prototype chain holds `wanted`, walked a bounded number of steps. */
 function inherits(value: object, wanted: object): boolean {
 	let p: unknown = Object.getPrototypeOf(value);
@@ -73,8 +63,9 @@ type Own = { readonly name: string; readonly value: unknown } | { readonly name:
 
 /**
  * The own string-named properties of an object, read through their descriptors only, at most
- * DIAGNOSTIC_LIMIT of them, each data value's native promise observed as it is read; or undefined when a
- * Proxy's trap threw, after what it threw is observed.
+ * DIAGNOSTIC_LIMIT of them, each data value's native promises observed as it is read, walking up to
+ * DIAGNOSTIC_LIMIT values within it, since a Proxy can hand back a fresh value on every read; or undefined
+ * when a Proxy's trap threw, after what it threw is observed.
  */
 function ownProperties(item: object): { readonly own: readonly Own[]; readonly more: boolean } | undefined {
 	try {
@@ -85,7 +76,7 @@ function ownProperties(item: object): { readonly own: readonly Own[]; readonly m
 			const descriptor = Object.getOwnPropertyDescriptor(item, name);
 			if (descriptor === undefined) continue;
 			if (Object.hasOwn(descriptor, "value")) {
-				observePromises(descriptor.value, 0);
+				observePromises(descriptor.value, DIAGNOSTIC_LIMIT);
 				own.push({ name, value: descriptor.value });
 			} else own.push({ name, accessor: true });
 		}
@@ -140,14 +131,18 @@ export function describe(value: unknown, said = false): string {
 		else if (typeof item === "function") write("<a function>");
 		else if (item === null || typeof item !== "object") write(String(item));
 		else if (path.has(item)) write("<cycle>");
-		else if (isPromise(item)) write("<a promise>");
 		else {
-			let kind: "error" | "array" | "object";
+			let kind: "promise" | "error" | "array" | "object";
 			try {
-				kind = Array.isArray(item) ? "array" : inherits(item, Error.prototype) ? "error" : "object";
+				// A Proxy's trap that throws while the value is classified makes it unreadable, what it threw observed.
+				kind = item instanceof Promise ? "promise" : Array.isArray(item) ? "array" : inherits(item, Error.prototype) ? "error" : "object";
 			} catch (err) {
 				observePromises(err);
 				write("<unreadable>");
+				continue;
+			}
+			if (kind === "promise") {
+				write("<a promise>");
 				continue;
 			}
 			const read = ownProperties(item);

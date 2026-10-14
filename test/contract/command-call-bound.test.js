@@ -47,9 +47,17 @@ const PREPARE_MALFORMED = Object.freeze({
 	"proxy-trap-throws-rejected-code": neither(proxiedCode),
 	// Its trap throws on every read, the diagnostic's own included, so the diagnostic cannot read it.
 	"proxy-trap-always-throws-rejected-code": neither("<unreadable>"),
-	"proxy-prototype-trap-throws-rejected-code": neither("<unreadable>"),
+	// Its prototype trap throws when prepare's result is asked whether it is a promise: prepare failed with the promise it threw.
+	"proxy-prototype-trap-throws-rejected-code": "prepare failed: <a promise>",
 	"extra-field": neither('{"ending": "not-delivered", "agpCode": "NO_ROUTE", "proxyCode": null, "extra": true}'),
+	"proxy-nested-first-code": neither('{"ending": "not-delivered", "agpCode": "TIMEOUT", "proxyCode": null, "earlierAttemptsUncertain": false, "hidden": 1}'),
+	"proxy-caught-object-code": neither('{"ending": "not-delivered", "agpCode": {}, "proxyCode": null, "earlierAttemptsUncertain": false}'),
+	// Its prototype trap throws when prepare's result is asked whether it is a promise: prepare failed with what it threw.
+	"proxy-prototype-once-throws-code": 'prepare failed: {"held": <a promise>}',
 });
+
+/** The Proxy results of attempt 6's F1: an object holding a rejected promise as a descriptor's first value, before a hidden field; a one-time prototype trap throwing an object holding one, on agpCode or on the result itself. */
+const ONCE_OBJECT = Object.freeze(["proxy-nested-first-code", "proxy-caught-object-code", "proxy-prototype-once-throws-code"]);
 
 /** The Proxy results of attempt 5's F1: a rejected promise as a descriptor's value on its first read only, or thrown by the descriptor trap, once or on every read, or by the prototype trap. */
 const PROXIED = Object.freeze(["proxy-first-read-rejected-code", "proxy-trap-throws-rejected-code", "proxy-trap-always-throws-rejected-code", "proxy-prototype-trap-throws-rejected-code"]);
@@ -271,6 +279,51 @@ describe("OC3 - preparing with the deadline on the injected clock port", { concu
 		}
 	});
 
+	test("a prepare result that is a Proxy handing back an object holding a rejected promise as a descriptor's first value before a hidden field (nested-first), or whose one-time prototype trap throws an object holding one (caught-object), and prepare throwing or rejecting a Proxy of a long-messaged error whose detail is fresh on every read (diagnostic-new): every promise obtained is observed, so in this process and with standard output's write held the command exits 3 with one diagnostic line, run never called", async () => {
+		const fresh = cut(`diagnostic: prepare failed: ${CYCLIC_ERRORS["long-message-fresh-detail"].said}`);
+		assert.equal(fresh.length, 1003, "cut at 1000 characters, ... added");
+		await noRejectionEscapes(async () => {
+			for (const malformed of ONCE_OBJECT) {
+				for (const r of await preparedInProcess(() => ({ value: MALFORMED[malformed]() }))) {
+					assert.deepEqual([r.status, r.runs, r.stderr], [3, 0, `diagnostic: ${PREPARE_MALFORMED[malformed]}\n`], `${malformed} ${r.json ? "--json" : "plain"}`);
+					assert.equal(r.stdout, preparedRecord(r.json, r.stdout, null, null));
+				}
+			}
+			for (const rejects of [false, true]) {
+				for (const json of [true, false]) {
+					let runs = 0;
+					const decl = fixtureDeclaration({});
+					decl.client = { prepare: () => { const e = CYCLIC_ERRORS["long-message-fresh-detail"].make(); if (rejects) return Promise.reject(e); throw e; } };
+					decl.commands = decl.commands.map((c) => c.local ? c : { ...c, run: () => { runs++; return { ending: "answered", answer: 1 }; } });
+					const out = [];
+					const err = [];
+					const status = await within(declareProgram(decl).run({ args: ["read", "--name", "a", ...(json ? ["--json"] : [])], env: BASE_ENV, stdout: (t) => out.push(t), stderr: (t) => err.push(t) }), "diagnostic-new");
+					assert.deepEqual([status, runs, err], [3, 0, [`${fresh}\n`]], `${rejects ? "rejects" : "throws"} ${json ? "--json" : "plain"}`);
+					assert.equal(out.join(""), preparedRecord(json, out.join(""), null, null));
+				}
+			}
+		});
+		// Through the process adapter, with no rejection listener: standard output's write is held until the command
+		// received SIGINT, sent well after the ending was written, so a rejection left unhandled would end it with status 1.
+		const scenarios = [
+			...ONCE_OBJECT.map((malformed) => ({ prepare: { malformed }, diagnostic: `diagnostic: ${PREPARE_MALFORMED[malformed]}\n` })),
+			...[false, true].map((rejects) => ({ prepare: { fails: { error: "long-message-fresh-detail", rejects } }, diagnostic: `${fresh}\n` })),
+		];
+		for (const { prepare, diagnostic } of scenarios) {
+			for (const json of [true, false]) {
+				const command = startFixture(["read", "--name", "a", ...(json ? ["--json"] : [])], { env: BASE_ENV, scenario: { prepare, run: answered, holdWrite: { until: ["SIGINT"] } } });
+				await command.waitFor("write-held");
+				await sleep(200);
+				command.signal("SIGINT");
+				const r = await command.ended;
+				assert.deepEqual([r.status, r.signal, r.stderr], [3, null, diagnostic], `${JSON.stringify(prepare)} ${json ? "--json" : "plain"}`);
+				assert.ok(events(r).includes("signal-received") && events(r).includes("write-released"), "the process lived until the held write was released");
+				assert.ok(!events(r).includes("run"), "run is never called");
+				assert.equal(r.stdout, preparedRecord(json, r.stdout, null, null));
+			}
+		}
+	});
+
 	test("a client that offers no prepare goes straight to run", async () => {
 		const result = await runFixture(["read", "--name", "a", "--json"], { env: BASE_ENV, scenario: { run: answered } });
 		assert.equal(result.status, 0);
@@ -453,7 +506,7 @@ describe("OC3 - what prepare settles to: the string ready, or a not-delivered en
 	});
 
 	test("prepare rejecting or throwing an error whose own message is itself, which holds a value that holds it, whose own name or own message exceeds 1000 characters beside a rejected promise in another own property, and one too long for a line: not delivered with null codes and one finite diagnostic line, no unhandled rejection, run never called, through the process adapter", async () => {
-		const cases = [...["name-itself", "message-itself", "holds-its-holder", "long-name-rejected-message", "long-name-rejected-detail", "long-name-rejecting-getter", "long-message-rejected-detail"].flatMap((error) => [{ error, rejects: true }, { error, rejects: false }]), { error: "long-message", rejects: true }];
+		const cases = [...["name-itself", "message-itself", "holds-its-holder", "long-name-rejected-message", "long-name-rejected-detail", "long-name-rejecting-getter", "long-message-rejected-detail", "long-message-fresh-detail"].flatMap((error) => [{ error, rejects: true }, { error, rejects: false }]), { error: "long-message", rejects: true }];
 		for (const fails of cases) {
 			// An unhandled rejection would end the child with status 1 before its ending is written.
 			const both = await bothForms(["read", "--name", "a"], { prepare: { fails }, run: answered });
@@ -467,7 +520,7 @@ describe("OC3 - what prepare settles to: the string ready, or a not-delivered en
 		}
 		// In this process too, in both forms: no rejection escapes, for each long-named or long-messaged error thrown or rejected.
 		await noRejectionEscapes(async () => {
-			for (const error of ["long-name-rejected-message", "long-name-rejected-detail", "long-name-rejecting-getter", "long-message-rejected-detail"]) {
+			for (const error of ["long-name-rejected-message", "long-name-rejected-detail", "long-name-rejecting-getter", "long-message-rejected-detail", "long-message-fresh-detail"]) {
 				for (const rejects of [true, false]) {
 					for (const json of [true, false]) {
 						let runs = 0;
@@ -498,6 +551,8 @@ describe("OC3 - what prepare settles to: the string ready, or a not-delivered en
 			() => ({ value: dataEnding({ ending: "answered", answer: 1 }, "class-instance") }),
 			// A Proxy handing back a rejected promise on its first descriptor read, or throwing one from its trap (attempt 5's F1).
 			...PROXIED.map((malformed) => () => ({ value: MALFORMED[malformed]() })),
+			// A Proxy handing back an object holding a rejected promise, or a one-time prototype trap throwing one (attempt 6's F1).
+			...ONCE_OBJECT.map((malformed) => () => ({ value: MALFORMED[malformed]() })),
 			() => ({ value: oneGetterEnding(nd, "agpCode", "throws").value }),
 			() => ({ value: oneGetterEnding(nd, "agpCode", "promise").value }),
 			...Object.values(CYCLIC_ERRORS).map((e) => () => ({ error: e.make() })),

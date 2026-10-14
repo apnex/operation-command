@@ -11,30 +11,33 @@ import { observePromises } from "@apnex/shape-check";
 export type Settled = { readonly value: unknown } | { readonly error: unknown };
 
 /**
- * True for a native promise; a Proxy's trap that throws while asked makes the value no promise, and what it
- * threw has its native promises observed.
- */
-function isNativePromise(value: unknown): value is Promise<unknown> {
-	if (value === null || typeof value !== "object") return false;
-	try {
-		return value instanceof Promise;
-	} catch (error) {
-		observePromises(error);
-		return false;
-	}
-}
-
-/**
  * Settles a value: a native promise awaited, to the value it fulfils with or the reason it rejects with;
- * anything else is its own settled value, never probed for a `then`. Never rejects.
+ * anything else is its own settled value, never probed for a `then`. A Proxy's trap that throws while the
+ * value is asked whether it is a native promise settles it with that error at once, the value never read as
+ * though nothing threw; what was thrown, the value, and an error attaching or rejecting have their native
+ * promises observed. Never rejects.
  */
 export function settle(value: unknown): Promise<Settled> {
-	if (!isNativePromise(value)) return Promise.resolve({ value });
+	if (value === null || typeof value !== "object") return Promise.resolve({ value });
+	try {
+		if (!(value instanceof Promise)) return Promise.resolve({ value });
+	} catch (error) {
+		observePromises(error);
+		observePromises(value);
+		return Promise.resolve({ error });
+	}
 	return new Promise((done) => {
 		try {
-			Reflect.apply(Promise.prototype.then, value, [(fulfilled: unknown) => done({ value: fulfilled }), (error: unknown) => done({ error })]);
+			Reflect.apply(Promise.prototype.then, value, [
+				(fulfilled: unknown) => done({ value: fulfilled }),
+				(error: unknown) => {
+					observePromises(error);
+					done({ error });
+				},
+			]);
 		} catch (error) {
 			// A promise whose own `constructor` or `Symbol.species` threw before its reactions were installed.
+			observePromises(error);
 			done({ error });
 		}
 	});

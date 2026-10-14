@@ -102,6 +102,39 @@ export function prototypeTrapProxy(target, message) {
 	return new Proxy(target, { getPrototypeOf() { throw Promise.reject(new Error(`${message} (run ${++runs})`)); } });
 }
 
+/**
+ * A Proxy over `target` whose descriptor for `name` hands back a fresh object holding a rejected promise on
+ * its first read only, and whose descriptor for `hidden` says it is not enumerable, so a reading refuses the
+ * value at `hidden` before it reaches the object it obtained (attempt 6's F1, nested-first): only a reading
+ * that observes the very object it obtained, not the Proxy read again, consumes that promise.
+ */
+export function nestedFirstProxy(target, name, hidden, message) {
+	let reads = 0;
+	return new Proxy(target, {
+		getOwnPropertyDescriptor(inner, key) {
+			const descriptor = Reflect.getOwnPropertyDescriptor(inner, key);
+			if (key === name && ++reads === 1) return { ...descriptor, value: { held: Promise.reject(new Error(message)) } };
+			if (key === hidden) return { ...descriptor, enumerable: false };
+			return descriptor;
+		},
+	});
+}
+
+/**
+ * A Proxy over an empty object whose `getPrototypeOf` trap, the first time it runs only, throws a fresh object
+ * holding a rejected promise, and gives Object.prototype after (attempt 6's F1, caught-object): a reading that
+ * swallowed that throw and asked again would read the Proxy as plain data.
+ */
+export function prototypeOnceProxy(message, target = {}) {
+	let runs = 0;
+	return new Proxy(target, {
+		getPrototypeOf() {
+			if (++runs === 1) throw { held: Promise.reject(new Error(message)) };
+			return Object.prototype;
+		},
+	});
+}
+
 /** A not-delivered ending a prepare may give, valid but for what a Proxy over it does. */
 const PROXIED_CODE = () => ({ ending: "not-delivered", agpCode: "TIMEOUT", proxyCode: null, earlierAttemptsUncertain: false });
 /** A whole answered ending a run may give, valid but for what a Proxy over it does. */
@@ -161,6 +194,18 @@ export const MALFORMED = Object.freeze({
 	"proxy-trap-always-throws-rejected-answer": () => onceProxy(PROXIED_ANSWER(), "answer", "trap-always-throws", "the answer's descriptor trap always throws a rejected promise"),
 	/** A whole answered ending whose Proxy's getPrototypeOf trap throws a fresh rejected promise every time. */
 	"proxy-prototype-trap-throws-rejected-answer": () => prototypeTrapProxy(PROXIED_ANSWER(), "the answered ending's prototype trap threw a rejected promise"),
+	/** A not-delivered ending whose Proxy hands back an object holding a rejected promise as agpCode's first value, and hides a later field. */
+	"proxy-nested-first-code": () => nestedFirstProxy({ ...PROXIED_CODE(), hidden: 1 }, "agpCode", "hidden", "the code's first descriptor value held a rejected promise"),
+	/** A not-delivered ending whose agpCode is a Proxy whose first getPrototypeOf throws an object holding a rejected promise. */
+	"proxy-caught-object-code": () => ({ ...PROXIED_CODE(), agpCode: prototypeOnceProxy("the code's prototype trap threw an object holding a rejected promise") }),
+	/** A not-delivered ending that is itself a Proxy whose first getPrototypeOf throws an object holding a rejected promise. */
+	"proxy-prototype-once-throws-code": () => prototypeOnceProxy("the not-delivered ending's prototype trap threw an object holding a rejected promise", PROXIED_CODE()),
+	/** A whole answered ending whose Proxy hands back an object holding a rejected promise as answer's first value, and hides a later field. */
+	"proxy-nested-first-answer": () => nestedFirstProxy({ ...PROXIED_ANSWER(), hidden: 1 }, "answer", "hidden", "the answer's first descriptor value held a rejected promise"),
+	/** A whole answered ending whose answer is a Proxy whose first getPrototypeOf throws an object holding a rejected promise. */
+	"proxy-caught-object-answer": () => ({ ...PROXIED_ANSWER(), answer: prototypeOnceProxy("the answer's prototype trap threw an object holding a rejected promise") }),
+	/** A whole answered ending that is itself a Proxy whose first getPrototypeOf throws an object holding a rejected promise. */
+	"proxy-prototype-once-throws-answer": () => prototypeOnceProxy("the answered ending's prototype trap threw an object holding a rejected promise", PROXIED_ANSWER()),
 	/** A plain not-delivered ending whose sole defect is an extra own data field (attempt 5's F2). */
 	"extra-field": () => ({ ending: "not-delivered", agpCode: "NO_ROUTE", proxyCode: null, extra: true }),
 });
@@ -172,7 +217,8 @@ export const MALFORMED = Object.freeze({
  * a long message; three whose own name is longer than a line holds, beside a rejected promise as their own
  * message, a rejected promise held in another own property, and a message getter giving a rejected promise
  * (attempt 4's F1); one whose own message is longer than a line holds, beside a rejected promise in another
- * own property (attempt 5's F2); and one whose name is an inherited getter. Each case's description, as OC4 writes it from
+ * own property (attempt 5's F2); a Proxy of one whose own message is longer than a line holds, its own detail a
+ * fresh object holding a fresh rejected promise on every read (attempt 6's F2); and one whose name is an inherited getter. Each case's description, as OC4 writes it from
  * own data descriptors only - never an inherited name, never a getter run - is beside it.
  */
 const LONG_NAME = "n".repeat(1100);
@@ -185,6 +231,15 @@ export const CYCLIC_ERRORS = Object.freeze({
 	"long-name-rejected-message": { make: () => Object.defineProperties(new Error(), { name: { value: LONG_NAME }, message: { value: Promise.reject(new Error("the message's promise rejected")) } }), said: `${LONG_NAME}: <a promise>` },
 	"long-name-rejected-detail": { make: () => Object.defineProperties(new Error("m"), { name: { value: LONG_NAME }, detail: { value: { held: [Promise.reject(new Error("the detail's promise rejected"))] } } }), said: `${LONG_NAME}: m` },
 	"long-message-rejected-detail": { make: () => Object.defineProperties(new Error(LONG_MESSAGE), { detail: { value: Promise.reject(new Error("the detail's promise beside a long message rejected")) } }), said: LONG_MESSAGE },
+	// A Proxy over an error with a long own message whose own `detail` descriptor hands back a fresh object holding a
+	// fresh rejected promise on every read, so the diagnostic's own last read makes one more (attempt 6's F2, diagnostic-new).
+	"long-message-fresh-detail": { make: () => new Proxy(new Error(LONG_MESSAGE), {
+		getOwnPropertyDescriptor(target, key) {
+			if (key === "detail") return { configurable: true, enumerable: true, writable: true, value: { held: Promise.reject(new Error("a fresh detail's promise rejected")) } };
+			return Reflect.getOwnPropertyDescriptor(target, key);
+		},
+		ownKeys(target) { return [...Reflect.ownKeys(target), "detail"]; },
+	}), said: LONG_MESSAGE },
 	"long-name-rejecting-getter": { make: () => Object.defineProperties(new Error(), { name: { value: LONG_NAME }, message: { get() { return Promise.reject(new Error("the message getter's promise rejected")); } } }), said: `${LONG_NAME}: <getter>` },
 	// Each reading of its name would give a new error of its kind; the name is inherited, so it is never read.
 	"endless-names": { make: () => { class Endless extends Error { get name() { return new Endless("again"); } } return new Endless("first"); }, said: "first" },

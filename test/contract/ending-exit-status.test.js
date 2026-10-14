@@ -40,8 +40,16 @@ const RUN_MALFORMED = Object.freeze({
 	"proxy-trap-throws-rejected-answer": notEnding(proxiedAnswer),
 	// Its trap throws on every read, the diagnostic's own included, so the diagnostic cannot read it.
 	"proxy-trap-always-throws-rejected-answer": notEnding("<unreadable>"),
-	"proxy-prototype-trap-throws-rejected-answer": notEnding("<unreadable>"),
+	// Its prototype trap throws when run's result is asked whether it is a promise: run failed with the promise it threw.
+	"proxy-prototype-trap-throws-rejected-answer": "run failed: <a promise>",
+	"proxy-nested-first-answer": notEnding(`${proxiedAnswer.slice(0, -1)}, "hidden": 1}`),
+	"proxy-caught-object-answer": notEnding(proxiedAnswer.replace('"answer": {"ok": true}', '"answer": {}')),
+	// Its prototype trap throws when run's result is asked whether it is a promise: run failed with what it threw.
+	"proxy-prototype-once-throws-answer": 'run failed: {"held": <a promise>}',
 });
+
+/** The Proxy results of attempt 6's F1: an object holding a rejected promise as answer's first descriptor value, before a hidden field; a one-time prototype trap throwing an object holding one, on answer or on the result itself. */
+const ONCE_OBJECT = Object.freeze(["proxy-nested-first-answer", "proxy-caught-object-answer", "proxy-prototype-once-throws-answer"]);
 
 /** The Proxy results of attempt 5's F1: a whole answered ending, a rejected promise as answer's descriptor value on its first read only, or thrown by the descriptor trap, once or on every read, or by the prototype trap. */
 const PROXIED = Object.freeze(["proxy-first-read-rejected-answer", "proxy-trap-throws-rejected-answer", "proxy-trap-always-throws-rejected-answer", "proxy-prototype-trap-throws-rejected-answer"]);
@@ -357,6 +365,67 @@ describe("OC4 - each ending's status, its JSON object whole and its plain form",
 			assert.deepEqual([json.status, json.signal, json.stderr], [0, null, ""], "the JSON form does not word the answer");
 			assert.equal(json.stdout, printed({ ending: "answered", answer }, true, JSON.parse(json.stdout).invocation));
 		}
+	});
+
+	test("a run result that is a Proxy handing back an object holding a rejected promise as a descriptor's first value before a hidden field (nested-first), or whose one-time prototype trap throws an object holding one (caught-object), and run or word throwing a Proxy of a long-messaged error whose detail is fresh on every read (diagnostic-new): every promise obtained is observed, so in this process and with standard output's write held the command exits 4 with its repeat, or 0 for word, with one diagnostic line", async () => {
+		const answer = { safe: true };
+		const { said } = CYCLIC_ERRORS["long-message-fresh-detail"];
+		const runLine = `${cut(`diagnostic: run failed: ${said}`)}\n`;
+		const wordLine = `${cut(`diagnostic: the answer could not be worded, so it is printed as JSON: word threw ${said}`)}\n`;
+		assert.equal(runLine.length, 1004, "cut at 1000 characters, ... added");
+		await noRejectionEscapes(async () => {
+			for (const malformed of ONCE_OBJECT) {
+				for (const r of await returnedInProcess(() => ({ value: MALFORMED[malformed]() }))) {
+					assert.deepEqual([r.status, r.stderr], [4, `diagnostic: ${RUN_MALFORMED[malformed]}\n`], `${malformed} ${r.json ? "--json" : "plain"}`);
+					assert.equal(r.stdout, printed(RUN_FAILED_ENDING, r.json, r.invocation), malformed);
+				}
+			}
+			for (const rejects of [false, true]) {
+				for (const json of [true, false]) {
+					const decl = fixtureDeclaration({ plainAnswer: true });
+					decl.commands = decl.commands.map((c) => c.local ? c : { ...c, run: () => { const e = CYCLIC_ERRORS["long-message-fresh-detail"].make(); if (rejects) return Promise.reject(e); throw e; } });
+					const out = [];
+					const err = [];
+					const status = await within(declareProgram(decl).run({ args: [...BASE, ...(json ? ["--json"] : [])], env: BASE_ENV, stdout: (t) => out.push(t), stderr: (t) => err.push(t) }), "diagnostic-new");
+					const stdout = out.join("");
+					assert.deepEqual([status, err.join("")], [4, runLine], `${rejects ? "rejects" : "throws"} ${json ? "--json" : "plain"}`);
+					assert.equal(stdout, printed(RUN_FAILED_ENDING, json, json ? JSON.parse(stdout).invocation : plainFacts(stdout).invocation));
+				}
+			}
+			const decl = fixtureDeclaration({ word: "throws-long-message-fresh-detail", run: { ending: { ending: "answered", answer } } });
+			const out = [];
+			const err = [];
+			assert.equal(await within(declareProgram(decl).run({ args: BASE, env: BASE_ENV, stdout: (t) => out.push(t), stderr: (t) => err.push(t) }), "word"), 0);
+			assert.equal(err.join(""), wordLine);
+			assert.equal(out.join(""), printed({ ending: "answered", answer }, false, plainFacts(out.join("")).invocation));
+		});
+		// Through the process adapter, with no rejection listener: standard output's write is held until the command
+		// received SIGINT, sent well after the ending was written, so a rejection left unhandled would end it with status 1.
+		const held = async (args, scenario) => {
+			const command = startFixture(args, { env: BASE_ENV, scenario: { ...scenario, holdWrite: { until: ["SIGINT"] } } });
+			await command.waitFor("write-held");
+			await sleep(200);
+			command.signal("SIGINT");
+			const r = await command.ended;
+			assert.ok(events(r).includes("signal-received") && events(r).includes("write-released"), "the process lived until the held write was released");
+			return r;
+		};
+		const runs = [
+			...ONCE_OBJECT.map((malformed) => ({ run: { malformed }, diagnostic: `diagnostic: ${RUN_MALFORMED[malformed]}\n` })),
+			...[false, true].map((rejects) => ({ run: { fails: { error: "long-message-fresh-detail", rejects } }, diagnostic: runLine })),
+		];
+		for (const { run, diagnostic } of runs) {
+			for (const json of [true, false]) {
+				const r = await held([...BASE, ...(json ? ["--json"] : [])], { plainAnswer: true, run });
+				assert.deepEqual([r.status, r.signal, r.stderr], [4, null, diagnostic], `${JSON.stringify(run)} ${json ? "--json" : "plain"}`);
+				assert.equal(r.records.filter((x) => x.event === "run").length, 1);
+				assert.equal(r.stdout, printed(RUN_FAILED_ENDING, json, json ? JSON.parse(r.stdout).invocation : plainFacts(r.stdout).invocation));
+			}
+		}
+		const scenario = { word: "throws-long-message-fresh-detail", prepare: { settle: "ready" }, run: { ending: { ending: "answered", answer } } };
+		const plain = await held(BASE, scenario);
+		assert.deepEqual([plain.status, plain.signal, plain.stderr], [0, null, wordLine]);
+		assert.equal(plain.stdout, printed({ ending: "answered", answer }, false, plainFacts(plain.stdout).invocation));
 	});
 
 	test("a usage error, with --json and without, leaves standard output empty and exits 1", async () => {
@@ -676,7 +745,7 @@ describe("OC4 - an ending read as plain data; a diagnostic that always ends", { 
 
 	test("run and word throwing an error whose own name or own message exceeds 1000 characters beside a rejected promise in another own property: one diagnostic line cut at 1000 characters and zero unhandled rejections, in this process", async () => {
 		await noRejectionEscapes(async () => {
-			for (const error of ["long-name-rejected-message", "long-name-rejected-detail", "long-name-rejecting-getter", "long-message-rejected-detail"]) {
+			for (const error of ["long-name-rejected-message", "long-name-rejected-detail", "long-name-rejecting-getter", "long-message-rejected-detail", "long-message-fresh-detail"]) {
 				const { said } = CYCLIC_ERRORS[error];
 				for (const rejects of [false, true]) {
 					for (const json of [true, false]) {
