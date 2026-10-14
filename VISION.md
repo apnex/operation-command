@@ -1,6 +1,6 @@
 # operation-command - Vision
 
-**Status: ratified by the director, 2026-10-11 (zorg's `docs/DECISIONS.md`, `D44`); enduring.**\
+**Status: ratified by the director, 2026-10-11 (zorg's `docs/DECISIONS.md`, `D44`), amended 2026-10-14 (`D55`); enduring.**\
 This document states why operation-command exists and what it will never be.\
 It carries no current state, no roadmap, and no schedule.
 
@@ -50,7 +50,7 @@ The application supplies its declaration, the client its commands run through, h
 ## What it is not
 
 **Not the call layer.**\
-It does not pair answers with requests, keep a call's bound, or decide how a call ended; it reports the ending the call layer gives it, unchanged, and adds only what is its own: the exit status, the refusal of a command that is not valid, the report of a command interrupted before it invoked anything, the ending not delivered of a command whose client could not get ready - a fact of its own, since no call was ever made - when the client does not say how, and the command that repeats an unknown ending.
+It does not pair answers with requests, keep a call's bound, or decide how a call ended; it reports the ending the call layer gives it, unchanged, and adds only what is its own: the exit status, the refusal of a command that is not valid, the report of a command interrupted before it invoked anything, the ending not delivered of a command whose client could not get ready - a fact of its own, since no call was ever made - when the client does not say how, the ending unknown when the application's own `run` rejects, throws, or returns what is not, read as plain data (`D54`), an ending the caller interface gives, and the command that repeats an unknown ending.
 
 **Not a retrier.**\
 It never repeats an invocation on its own; for an invocation whose ending is unknown, it prints how to repeat it, and the person or agent decides.
