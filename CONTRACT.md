@@ -46,7 +46,7 @@ In zorg's Delta 1, all rows but `command-reference` are built, for zorg's six co
 
 ## Command design
 
-**Maturity: provisional**, designed under zorg's Delta 1, amendment 2, and zorg's rulings `D8`, `D21`, `D35` and `D37`.\
+**Maturity: provisional**, designed under zorg's Delta 1, amendment 2, and zorg's rulings `D8`, `D21`, `D35` and `D37`; a URL type's pattern added under amendment 8 and `D56`.\
 Each declaration names the exit criterion of zorg's `docs/DELTAS/DELTA-1.md` that proves it and the test that exercises it.\
 Endings and invocation identities are those of zorg's `docs/ARCHITECTURE-TARGET.md`, `EM11` and `EM12`.
 
@@ -56,14 +56,16 @@ Its settings: each with a flag, an optional environment variable, an optional de
 Its commands: each with a name, the name of the operation it invokes, its own flags, which take no variable and no default, groups of its flags of which exactly one, or at least one, must be given, whether the command changes anything, and the application's `run` function, which performs the command's invocation through the application's client under the invocation identity, repeat flag, bound and abort signal it is given (`OC3`), and returns the call layer's ending.\
 Its client: an object the application supplies, which `run` calls through - for zorg, its SDK over entity-api and operation-proxy's client half - and which may offer a `prepare` step (`OC3`).\
 A command may instead be local: operation-command reads its flags and passes them to the application's code, whose exit is its own, with no invocation and no ending.\
-A flag's type is a string the whole of which matches a stated pattern, a whole number within stated bounds, a duration within stated bounds, a URL of stated schemes, or a switch; a flag may be required and may repeat, and a command's own flag may exclude or require another of that command's own flags - never a setting, whose variable and default would make a repeat, which writes every setting that took a value (`OC5`), break a relation the first run kept.\
+A flag's type is a string the whole of which matches a stated pattern, a whole number within stated bounds, a duration within stated bounds, a URL of stated schemes that may also state a pattern, or a switch; a flag may be required and may repeat, and a command's own flag may exclude or require another of that command's own flags - never a setting, whose variable and default would make a repeat, which writes every setting that took a value (`OC5`), break a relation the first run kept.\
+A pattern is a regular expression written as text, which the whole value must match from its first character to its last, compiled with no flags.\
 A duration is a whole number with no sign followed by one of `ms`, `s`, `m`, `h` or `d`, in lower case.\
+A URL is text that the WHATWG URL standard's parser, the runtime's `URL`, takes as an absolute URL, whose scheme, written without its colon, is one of those stated, and the whole of whose text matches the type's pattern when it states one; these are checked in that order, and the first that fails is the value's usage error (`OC2`).\
 The flags `--invocation` (`OC3`) and `--json`, a switch (`OC4`), are operation-command's own, offered by every command that is not local, and are no settings of the application's.\
 A flag is written `--` and a name matching `^[a-z0-9][a-z0-9-]*$`, a variable matches `^[A-Za-z_][A-Za-z0-9_]*$`, and a command's name matches `^[a-z0-9][a-z0-9-]*$`; the bound setting's declared range lies wholly within 1 millisecond to 2147483647, each of its ends checked, and the preparation setting's wholly within 0, a deadline already past, to that maximum; a duration's ends are whole numbers of milliseconds no larger than 9007199254740991.\
 The declaration names the settings that give a call's bound and its time to prepare (`command-call-bound`).\
 Time is read from a clock port, in milliseconds that a change to the wall clock does not move, by default `performance.now()`, which a test may replace.\
 A declaration that breaks these rules - a setting both required and defaulted, a switch required or repeating, and a field the declaration does not define among them - is refused by an error, thrown when the declaration is given to operation-command and naming the rule, before any argument is read; this is the application's defect, not a command's ending.\
-Tested by: `E19`, in `test/contract/declared-command-dispatch.test.js`, with a fixture application, including a declaration refused for a setting with a variable but neither a default nor required, and for a switch with a variable or a default.
+Tested by: `E19`, in `test/contract/declared-command-dispatch.test.js`, with a fixture application, including a declaration refused for a setting with a variable but neither a default nor required, for a switch with a variable or a default, and for a URL type whose pattern is not text or is not a regular expression.
 
 **OC2 - Reading a command.**\
 Arguments are the command's name followed by flags written `--flag value` or `--flag=value`, or `--flag` alone for a switch, which takes no value; a setting's value comes from its flag, else its variable, else its default, and a variable set to the empty string counts as unset.\
@@ -71,7 +73,7 @@ A usage error is any of: an unknown command or flag; a flag without its value, o
 Where several usage errors apply, the first met is reported: the arguments in the order given, then the settings' variables and required settings in the declaration's order, then the command's required flags, then the command's flags that exclude or require others, then the groups.\
 A usage error prints `usage: ` and what was wrong on standard error, one line, and exits with status 1 before the client is prepared, so nothing is prepared and nothing is invoked.\
 An interruption delivered while the arguments are read is reported in place of any usage error that reading found, a local command's included, as an interruption before `run` (`OC4`).\
-Tested by: `E19`, in `test/contract/declared-command-dispatch.test.js`, with a case for each kind of usage error, each group with none, one and two of its flags, an empty variable, a flag overriding its variable, a variable overriding its default, a repeated flag kept in order, and neither preparing nor invoking on any usage error.
+Tested by: `E19`, in `test/contract/declared-command-dispatch.test.js`, with a case for each kind of usage error, each group with none, one and two of its flags, an empty variable, a flag overriding its variable, a variable overriding its default, a repeated flag kept in order, and neither preparing nor invoking on any usage error; and a URL type with a pattern, given a value that the parser takes, of a stated scheme, which matches the pattern, one of a stated scheme which does not match it, and one whose text matches the pattern but which the parser refuses, such as `ws://xn--abc.example:1/` against `ws://[^/]+:[0-9]+/`, the last two each a usage error saying why, and the value accepted kept as the text it was taken from.
 
 **OC3 - Preparing and invoking.**\
 Before it prepares anything, a command fixes its invocation identity: the one `--invocation` gives, or a new one as `EM11` writes it.\
