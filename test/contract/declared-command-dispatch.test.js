@@ -97,6 +97,14 @@ describe("OC1 - the declaration", () => {
 		assert.ok(declareProgram(withSetting({ flag: "--a", type: { kind: "duration", min: "0ms", max: "9007199254740991ms" } })));
 		refused(withSetting({ flag: "--a", type: { kind: "url", schemes: [] } }), "value-type");
 		refused(withSetting({ flag: "--a", type: { kind: "url", schemes: ["ws:"] } }), "value-type");
+		// A URL type's pattern is text and a regular expression standing alone, as a string's is (OC1).
+		refused(withSetting({ flag: "--a", type: { kind: "url", schemes: ["ws"], pattern: 5 } }), "value-type");
+		refused(withSetting({ flag: "--a", type: { kind: "url", schemes: ["ws"], pattern: null } }), "value-type");
+		refused(withSetting({ flag: "--a", type: { kind: "url", schemes: ["ws"], pattern: "(" } }), "value-type");
+		refused(withSetting({ flag: "--a", type: { kind: "url", schemes: ["ws"], pattern: "a)(b" } }), "value-type");
+		assert.throws(() => declareProgram(withSetting({ flag: "--a", type: { kind: "url", schemes: ["ws"], pattern: "(" } })), /^DeclarationError: value-type: the setting --a's pattern "\(" is not a regular expression$/);
+		refused(withSetting({ flag: "--a", type: { kind: "url", schemes: ["ws"], pattern: "ws:.*", ports: [1] } }), "unknown-field");
+		assert.ok(declareProgram(withSetting({ flag: "--a", type: { kind: "url", schemes: ["ws"], pattern: "ws://[^/]+:[0-9]+/.*" } })));
 		refused(withSetting({ flag: "--a", type: { kind: "float" } }), "value-type");
 		refused(withSetting({ flag: "--a" }), "value-type");
 	});
@@ -294,6 +302,48 @@ describe("OC2 - reading a command: each kind of usage error", { concurrency: 4 }
 		await usageError(["read", "--name", "a", "--timeout", "25h"], { says: /is not a duration from 1ms to 24h/ });
 		await usageError(["read", "--name", "a", "--timeout", "0ms"], { says: /is not a duration from 1ms to 24h/ });
 		await usageError(["read", "--name", "a", "--url", "http://host:1/"], { says: /is not a URL of the schemes ws, wss/ });
+	});
+	test("a URL type with a pattern: the parser, then the scheme, then the pattern, the value kept as taken", async () => {
+		const PATTERN = "ws://[^/]+:[0-9]+/.*";
+		const probe = async (args, env = {}) => {
+			let prepared = 0, invoked = 0, flags;
+			const program = declareProgram(declaration({
+				settings: [...declaration().settings, { flag: "--hub", variable: "P_HUB", required: true, type: { kind: "url", schemes: ["ws"], pattern: PATTERN } }],
+				commands: [{ name: "go", operation: "go", changes: false, run: (context) => { invoked++; flags = context.flags; return { ending: "answered", invocation: context.invocation, attempt: `${context.invocation}.0000000a`, operation: context.operation, answer: null }; } }],
+				client: { prepare: () => { prepared++; return "ready"; } },
+			}));
+			let stdout = "", stderr = "";
+			const status = await program.run({ args, env, stdout: (t) => { stdout += t; }, stderr: (t) => { stderr += t; } });
+			return { status, stdout, stderr, prepared, invoked, flags };
+		};
+		const usage = async (args, env, says) => {
+			const result = await probe(args, env);
+			assert.deepEqual([result.status, result.stdout, result.prepared, result.invoked], [1, "", 0, 0], `${JSON.stringify(args)}: ${result.stderr}`);
+			assert.match(result.stderr, /^usage: [^\n]+\n$/);
+			assert.match(result.stderr, says);
+		};
+		// Parsed, of the scheme, matching: accepted, and run is given the text exactly as it was taken, not the parser's form.
+		for (const text of ["ws://host.example:1/agp", "ws://Host.Example:47100/a/../b?q=1", "ws://xn--bcher-kva.example:47100/agp"]) {
+			const result = await probe(["go", "--hub", text]);
+			assert.deepEqual([result.status, result.prepared, result.invoked, result.flags?.hub], [0, 1, 1, text], result.stderr);
+		}
+		// Parsed and of the scheme, not matching: the pattern's usage error.
+		await usage(["go", "--hub", "ws://host.example/agp"], {}, /^usage: the value "ws:\/\/host\.example\/agp" of --hub does not match the pattern ws:\/\/\[\^\/\]\+:\[0-9\]\+\/\.\* as a whole\n$/);
+		// The pattern matches the whole text: one that holds a matching part, here in its query, does not match.
+		await usage(["go", "--hub", "ws://host.example/x?u=ws://a:1/"], {}, /of --hub does not match the pattern .* as a whole\n$/);
+		// Matching the pattern, refused by the parser: the parser's usage error, checked first.
+		for (const text of ["ws://xn--abc.example:1/", "ws://xn--a-ecp.example:1/", "ws://999.999.999.999:1/", "ws://[1:2:3]:1/"]) {
+			assert.ok(new RegExp(`^(?:${PATTERN})$`).test(text), `${text} matches the pattern`);
+			await usage(["go", "--hub", text], {}, /^usage: the value "[^"]+" of --hub is not a URL\n$/);
+		}
+		// Refused by the parser and not matching the pattern either: the parser's usage error, checked before the pattern.
+		await usage(["go", "--hub", "ws://xn--abc.example/agp"], {}, /^usage: the value "ws:\/\/xn--abc\.example\/agp" of --hub is not a URL\n$/);
+		// Parsed, of another scheme, not matching either: the scheme's usage error, checked before the pattern.
+		await usage(["go", "--hub", "http://host.example/agp"], {}, /is not a URL of the scheme ws\n$/);
+		// The variable is read the same way, and its usage error names it.
+		await usage(["go"], { P_HUB: "ws://xn--abc.example:1/" }, /the variable P_HUB, standing in for --hub, is not a URL\n$/);
+		const fromVariable = await probe(["go"], { P_HUB: "ws://h:2/x" });
+		assert.deepEqual([fromVariable.status, fromVariable.flags.hub], [0, "ws://h:2/x"]);
 	});
 	test("a variable's value of the wrong type is a usage error naming the variable", async () => {
 		await usageError(["read", "--name", "a"], { env: { ...BASE_ENV, FIX_RETRIES: "many" }, says: /the variable FIX_RETRIES, standing in for --retries, is not a whole number/ });

@@ -109,6 +109,17 @@ function checkDescription(part: { readonly [key: string]: unknown }, what: strin
 	if (part["description"] !== undefined && typeof part["description"] !== "string") fail("unknown-field", `${what}'s description is text`);
 }
 
+/** Checks that a type's pattern is a regular expression, standing alone and anchored as a whole value is matched (OC1). */
+function checkPattern(pattern: string, what: string): void {
+	try {
+		// The pattern stands alone, so one such as "a)(b" is not made valid by the anchoring around it.
+		new RegExp(pattern);
+		wholePattern(pattern);
+	} catch {
+		fail("value-type", `${what}'s pattern ${quote(pattern)} is not a regular expression`);
+	}
+}
+
 /** Checks a type and its valid values, and prepares it. */
 function checkType(type: unknown, what: string): PreparedType {
 	if (!isObject(type)) return fail("value-type", `${what} has no type: one of string, integer, duration, url or switch, as { kind, ... }`);
@@ -117,13 +128,7 @@ function checkType(type: unknown, what: string): PreparedType {
 		case "string":
 			onlyFields(type, ["kind", "pattern"], `${what}'s type`);
 			if (typeof type["pattern"] !== "string") fail("value-type", `${what} is a string, whose type states its pattern as text`);
-			try {
-				// The pattern stands alone, so one such as "a)(b" is not made valid by the anchoring around it.
-				new RegExp(type["pattern"] as string);
-				wholePattern(type["pattern"] as string);
-			} catch {
-				fail("value-type", `${what}'s pattern ${quote(type["pattern"])} is not a regular expression`);
-			}
+			checkPattern(type["pattern"] as string, what);
 			break;
 		case "integer": {
 			onlyFields(type, ["kind", "min", "max"], `${what}'s type`);
@@ -140,9 +145,14 @@ function checkType(type: unknown, what: string): PreparedType {
 			break;
 		}
 		case "url": {
-			onlyFields(type, ["kind", "schemes"], `${what}'s type`);
+			onlyFields(type, ["kind", "schemes", "pattern"], `${what}'s type`);
 			const schemes = type["schemes"];
 			if (!Array.isArray(schemes) || schemes.length === 0 || !schemes.every((s) => typeof s === "string" && SCHEME_PATTERN.test(s))) fail("value-type", `${what} is a URL, whose type states its schemes, a list of one or more schemes written without their colon, such as ws`);
+			// A URL's type may also state a pattern, which its whole text must match after the parser and the scheme (OC1).
+			if (type["pattern"] !== undefined) {
+				if (typeof type["pattern"] !== "string") fail("value-type", `${what} is a URL whose type states a pattern, which is written as text`);
+				checkPattern(type["pattern"] as string, what);
+			}
 			break;
 		}
 		case "switch":

@@ -12,8 +12,12 @@ export type ValueType =
 	| { readonly kind: "integer"; readonly min: number; readonly max: number }
 	/** A duration from `min` to `max`, each written as a duration, such as `1ms` or `24h`. */
 	| { readonly kind: "duration"; readonly min: string; readonly max: string }
-	/** A URL whose scheme, written without its colon, is one of `schemes`. */
-	| { readonly kind: "url"; readonly schemes: readonly string[] }
+	/**
+	 * A URL: text the WHATWG URL standard's parser, the runtime's `URL`, takes as an absolute URL, whose scheme,
+	 * written without its colon, is one of `schemes`, and the whole of whose text matches `pattern` when one is
+	 * stated - checked in that order (OC1).
+	 */
+	| { readonly kind: "url"; readonly schemes: readonly string[]; readonly pattern?: string }
 	/** A switch: given alone, it is on; not given, it is off. */
 	| { readonly kind: "switch" };
 

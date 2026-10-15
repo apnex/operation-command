@@ -3,7 +3,8 @@
  *
  * A string matches a stated pattern as a whole, from its first character to its last; a whole number lies within stated bounds; a duration - a whole number
  * with no sign followed by one of `ms`, `s`, `m`, `h` or `d`, in lower case - lies within stated bounds;
- * a URL has one of the stated schemes; a switch takes no value. A value keeps the text it was taken from,
+ * a URL is one the WHATWG URL standard's parser takes, of one of the stated schemes, the whole of whose text
+ * matches the type's pattern when it states one, checked in that order; a switch takes no value. A value keeps the text it was taken from,
  * which a repeat writes exactly as it was taken (OC5), beside the value `run` is given.
  */
 import type { ValueType } from "./declaration-types.js";
@@ -78,6 +79,8 @@ export function prepareType(type: ValueType): PreparedType {
 		}
 		case "url": {
 			const schemes = type.schemes;
+			// The parser, then the scheme, then the pattern when one is stated; the first that fails is the usage error (OC1).
+			const pattern = type.pattern === undefined ? undefined : wholePattern(type.pattern);
 			return {
 				kind: "url",
 				read(text) {
@@ -88,7 +91,9 @@ export function prepareType(type: ValueType): PreparedType {
 						return { ok: false, why: "is not a URL" };
 					}
 					const scheme = url.protocol.slice(0, -1);
-					return schemes.includes(scheme) ? { ok: true, value: text } : { ok: false, why: `is not a URL of the scheme${schemes.length === 1 ? "" : "s"} ${schemes.join(", ")}` };
+					if (!schemes.includes(scheme)) return { ok: false, why: `is not a URL of the scheme${schemes.length === 1 ? "" : "s"} ${schemes.join(", ")}` };
+					if (pattern !== undefined && !pattern.test(text)) return { ok: false, why: `does not match the pattern ${type.pattern} as a whole` };
+					return { ok: true, value: text };
 				},
 			};
 		}
