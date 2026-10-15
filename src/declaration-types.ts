@@ -13,7 +13,8 @@ export type ValueType =
 	/** A duration from `min` to `max`, each written as a duration, such as `1ms` or `24h`. */
 	| { readonly kind: "duration"; readonly min: string; readonly max: string }
 	/**
-	 * A URL: text the WHATWG URL standard's parser, the runtime's `URL`, takes as an absolute URL, whose scheme,
+	 * A URL: text the WHATWG URL standard's parser, the runtime's `URL`, takes as an absolute URL and takes back,
+	 * unchanged, from the form it writes for it, whose scheme,
 	 * written without its colon, is one of `schemes`, and the whole of whose text matches `pattern` when one is
 	 * stated - checked in that order (OC1).
 	 */

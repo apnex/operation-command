@@ -3,7 +3,7 @@
  *
  * A string matches a stated pattern as a whole, from its first character to its last; a whole number lies within stated bounds; a duration - a whole number
  * with no sign followed by one of `ms`, `s`, `m`, `h` or `d`, in lower case - lies within stated bounds;
- * a URL is one the WHATWG URL standard's parser takes, of one of the stated schemes, the whole of whose text
+ * a URL is one the WHATWG URL standard's parser takes, and takes back unchanged from the form it writes for it, of one of the stated schemes, the whole of whose text
  * matches the type's pattern when it states one, checked in that order; a switch takes no value. A value keeps the text it was taken from,
  * which a repeat writes exactly as it was taken (OC5), beside the value `run` is given.
  */
@@ -29,6 +29,15 @@ export function durationMs(text: string): number | undefined {
 /** A stated pattern made to match only a whole value, from its first character to its last. */
 export function wholePattern(pattern: string): RegExp {
 	return new RegExp(`^(?:${pattern})$`);
+}
+
+/** Whether the parser takes a URL back, unchanged, from the form it writes for it (OC1). */
+function readsBack(url: URL): boolean {
+	try {
+		return new URL(url.href).href === url.href;
+	} catch {
+		return false;
+	}
 }
 
 /** A value read from its text: the value `run` is given, or why the text is not one. */
@@ -90,6 +99,9 @@ export function prepareType(type: ValueType): PreparedType {
 					} catch {
 						return { ok: false, why: "is not a URL" };
 					}
+					// A URL the parser cannot take back from the form it writes for it is no URL: nothing after can rebuild
+					// it, and in Node 24 setting any part of one stops the process (OC1).
+					if (!readsBack(url)) return { ok: false, why: `is not a URL: the parser writes it as ${JSON.stringify(url.href)}, which it does not take back unchanged` };
 					const scheme = url.protocol.slice(0, -1);
 					if (!schemes.includes(scheme)) return { ok: false, why: `is not a URL of the scheme${schemes.length === 1 ? "" : "s"} ${schemes.join(", ")}` };
 					if (pattern !== undefined && !pattern.test(text)) return { ok: false, why: `does not match the pattern ${type.pattern} as a whole` };

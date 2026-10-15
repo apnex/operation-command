@@ -338,6 +338,18 @@ describe("OC2 - reading a command: each kind of usage error", { concurrency: 4 }
 		}
 		// Refused by the parser and not matching the pattern either: the parser's usage error, checked before the pattern.
 		await usage(["go", "--hub", "ws://xn--abc.example/agp"], {}, /^usage: the value "ws:\/\/xn--abc\.example\/agp" of --hub is not a URL\n$/);
+		// Taken by the parser but not back from the form it writes for it: refused as no URL, before the scheme and the
+		// pattern. Which texts these are is the runtime's parser's; Node 24's writes a host led by U+00E9 and then "xn-"
+		// as a label beginning "xn--xn-", which it refuses. Each case is judged by this runtime's own parser, and at
+		// least one must be such a text, or the rule goes unexercised.
+		const readsBack = (text) => { const url = new URL(text); try { return new URL(url.href).href === url.href; } catch { return false; } };
+		const unwritable = ["ws://\u00E9xn--a:1/x", "ws://x.\u00C9XN--A:1/x", "ws://\u00E9xn-:1/x", "http://\u00E9xn--a:1/x"];
+		assert.ok(unwritable.some((text) => !readsBack(text)), "this runtime's parser takes back every case, so the rule is not exercised: choose a text it does not");
+		for (const text of unwritable) {
+			if (readsBack(text)) continue;
+			await usage(["go", "--hub", text], {}, /^usage: the value "[^"]+" of --hub is not a URL: the parser writes it as "[^"]+", which it does not take back unchanged\n$/);
+			await usage(["go"], { P_HUB: text }, /the variable P_HUB, standing in for --hub, is not a URL: the parser writes it as/);
+		}
 		// Parsed, of another scheme, not matching either: the scheme's usage error, checked before the pattern.
 		await usage(["go", "--hub", "http://host.example/agp"], {}, /is not a URL of the scheme ws\n$/);
 		// The variable is read the same way, and its usage error names it.
