@@ -17,7 +17,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", ".
 const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
 const map = JSON.parse(fs.readFileSync(path.join(root, "export-map.json"), "utf8"));
 const publicName = (p) => p === "." ? pkg.name : `${pkg.name}/${p.slice(2)}`;
-const FENCED = ["declared-command-dispatch", "ending-exit-status", "repeat-command-line", "command-call-bound"];
+const FENCED = ["declared-command-dispatch", "ending-exit-status", "repeat-command-line", "command-call-bound", "command-reference"];
 
 test("the export map names the package and exactly its exported paths", () => {
 	assert.equal(map.package, pkg.name);
@@ -46,7 +46,7 @@ const contractRows = () => {
 
 test("every contract row is served by an export or deferred with a ruling, never both; every fenced row is served; only command-reference is deferred", () => {
 	const rows = contractRows();
-	assert.deepEqual(rows, [...FENCED, "command-reference"]);
+	assert.deepEqual(rows, FENCED);
 	const served = new Set(Object.values(map.paths).flatMap((e) => Object.values(e.exports)).flatMap((x) => x.serves));
 	for (const row of rows) assert.ok(served.has(row) || map.deferred[row], `${row} is neither served nor deferred`);
 	for (const row of served) assert.ok(rows.includes(row), `${row} is not a row of CONTRACT.md`);
@@ -55,13 +55,13 @@ test("every contract row is served by an export or deferred with a ruling, never
 		assert.ok(!served.has(row), `${row} is both served and deferred`);
 	}
 	for (const row of FENCED) assert.ok(served.has(row) && !map.deferred[row], `the fenced row ${row} is served`);
-	assert.deepEqual(map.deferred, { "command-reference": "D37" }, "command-reference is left out of Delta 1 (zorg's D37, amendment 2)");
+	assert.deepEqual(map.deferred, {}, "all five capabilities are served in Delta 3 (zorg's D57)");
 });
 
 test("every fenced row has a contract test file named for it, and the integrated test of OC7 exists", () => {
 	for (const row of FENCED) assert.ok(fs.existsSync(path.join(root, "test", "contract", `${row}.test.js`)), `${row}.test.js`);
 	assert.ok(fs.existsSync(path.join(root, "test", "contract", "integrated-commands.test.js")));
-	assert.ok(!fs.existsSync(path.join(root, "test", "contract", "command-reference.test.js")), "the deferred row's test is owed with it (OC6)");
+	assert.ok(fs.existsSync(path.join(root, "test", "contract", "command-reference.test.js")), "command-reference.test.js (OC6)");
 });
 
 const sources = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((d) => d.isDirectory() ? sources(path.join(dir, d.name)) : [path.join(dir, d.name)]);

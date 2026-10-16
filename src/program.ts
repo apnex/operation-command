@@ -16,6 +16,7 @@ import { observePromises, readPlainJson } from "@apnex/shape-check";
 import { outcomeOf, type Settled } from "./client-value.js";
 import { EXIT_STATUS, printEnding, readEnding, RUN_FAILED, type Ending, type Wording } from "./endings.js";
 import { readCommand, type ReadCommand } from "./reading.js";
+import { formatCompiledReference } from "./reference.js";
 import { repeatArguments } from "./repeat.js";
 import { systemCommandClock, systemIdentities } from "./system-ports.js";
 import { describe, DIAGNOSTIC_LIMIT, diagnosticLine, singleLine } from "./value-text.js";
@@ -47,6 +48,8 @@ export interface Program {
 	readonly name: string;
 	/** Runs one command and gives its exit status; it never exits the process itself. */
 	run(io: CommandIo): Promise<number>;
+	/** Generates the deterministic reference of the program from its declaration (OC6). */
+	reference(): string;
 }
 
 /** The line reporting an interruption before `run` (OC4). */
@@ -117,7 +120,8 @@ function judgePrepared(outcome: Settled): Prepared {
 /** Declares a program: checks the declaration (OC1), throwing a DeclarationError naming any rule it breaks. */
 export function declareProgram<Client extends object>(declaration: ProgramDeclaration<Client>): Program {
 	const program = compileProgram(declaration as ProgramDeclaration<object>);
-	return Object.freeze({ name: program.name, run: (io: CommandIo) => runCommand(program, io) });
+	const text = formatCompiledReference(program);
+	return Object.freeze({ name: program.name, run: (io: CommandIo) => runCommand(program, io), reference: () => text });
 }
 
 async function runCommand(program: CompiledProgram, io: CommandIo): Promise<number> {

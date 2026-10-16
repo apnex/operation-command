@@ -5,9 +5,11 @@
  * DeclarationError - declared-command-dispatch: the error refusing a declaration, naming the rule it breaks.
  * EXIT_STATUS - ending-exit-status: the status of each ending and of a command refused before invoking.
  * systemCommandClock - command-call-bound: the default clock port, `performance.now()`.
- * The process adapter is `@apnex/operation-command/process`. command-reference is deferred (zorg's D37).
+ * formatReference - command-reference: generates the reference of every command from the declaration (OC6).
+ * The process adapter is `@apnex/operation-command/process`.
  */
 export { declareProgram, INTERRUPTED_LINE, type CommandIo, type Interruptions, type Program } from "./program.js";
+export { formatReference } from "./reference.js";
 export { DeclarationError, type DeclarationRule } from "./declaration.js";
 export { EXIT_STATUS, RUN_FAILED } from "./endings.js";
 export { systemCommandClock } from "./system-ports.js";

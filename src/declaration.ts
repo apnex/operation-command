@@ -30,6 +30,7 @@ export interface CompiledFlag {
 	/** The flag without its leading `--`: the key of its value in the flags `run` is given. */
 	readonly key: string;
 	readonly type: PreparedType;
+	readonly rawType: ValueType;
 	readonly isSwitch: boolean;
 	readonly required: boolean;
 	readonly repeats: boolean;
@@ -39,6 +40,7 @@ export interface CompiledFlag {
 	readonly variable: string | undefined;
 	readonly defaultText: string | undefined;
 	readonly secret: boolean;
+	readonly description: string | undefined;
 }
 
 /** A group of a command's own flags. */
@@ -58,11 +60,13 @@ export interface CompiledCommand {
 	readonly groups: readonly CompiledGroup[];
 	readonly run: (context: never) => unknown;
 	readonly word: ((answer: never, flags: never) => unknown) | undefined;
+	readonly description: string | undefined;
 }
 
 /** A program as the reader and the runner use it. */
 export interface CompiledProgram {
 	readonly name: string;
+	readonly description: string | undefined;
 	/** The settings, in the order declared. */
 	readonly settings: readonly CompiledFlag[];
 	readonly commands: ReadonlyMap<string, CompiledCommand>;
@@ -70,6 +74,8 @@ export interface CompiledProgram {
 	/** The keys of the bound and preparation settings, when any command invokes. */
 	readonly callBound: string | undefined;
 	readonly prepareTime: string | undefined;
+	readonly callBoundFlag: string | undefined;
+	readonly prepareTimeFlag: string | undefined;
 }
 
 /** operation-command's own flag, offered by every command that is not local (OC1, OC3). */
@@ -205,10 +211,12 @@ function checkFlag(part: unknown, what: string, setting: boolean): Omit<Compiled
 		const read = type.read(defaultText as string);
 		if (!read.ok) fail("default-invalid", `${name}'s default ${quote(defaultText)} ${read.why}`);
 	}
+	const rawType = Object.freeze(structuredClone(part["type"]) as unknown as ValueType);
 	return {
-		flag: flag as string, key: (flag as string).slice(2), type, isSwitch, required, repeats, setting, secret,
+		flag: flag as string, key: (flag as string).slice(2), type, rawType, isSwitch, required, repeats, setting, secret,
 		excludes: relation("excludes"), requires: relation("requires"),
 		variable: variable as string | undefined, defaultText: defaultText as string | undefined,
+		description: part["description"] as string | undefined,
 	};
 }
 
@@ -271,6 +279,7 @@ function checkCommand(part: unknown, settings: readonly CompiledFlag[]): Compile
 		name: name as string, local, operation: local ? "" : part["operation"] as string, changes: local ? false : part["changes"] as boolean,
 		flags: Object.freeze(flags), groups, run: part["run"] as CompiledCommand["run"],
 		word: part["word"] as CompiledCommand["word"],
+		description: part["description"] as string | undefined,
 	});
 }
 
@@ -323,6 +332,16 @@ export function compileProgram(declaration: ProgramDeclaration<object>): Compile
 	} else if (declaration.callBound !== undefined || declaration.prepareTime !== undefined) {
 		fail("call-settings", "a program whose every command is local names no setting for a call's bound or its time to prepare");
 	}
-	return Object.freeze({ name: name as string, settings: Object.freeze(settings), commands, client: client as object, callBound, prepareTime });
+	return Object.freeze({
+		name: name as string,
+		description: declaration.description as string | undefined,
+		settings: Object.freeze(settings),
+		commands,
+		client: client as object,
+		callBound,
+		prepareTime,
+		callBoundFlag: callBound === undefined ? undefined : `--${callBound}`,
+		prepareTimeFlag: prepareTime === undefined ? undefined : `--${prepareTime}`,
+	});
 }
 
