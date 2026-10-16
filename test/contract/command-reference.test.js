@@ -33,7 +33,7 @@ describe("OC6 - command-reference (D3-E1)", () => {
 		assert.match(ref, /group \(exactly-one\): --name, --id/);
 		assert.match(ref, /group \(at-least-one\): --rename, --summary, --tag, --no-tags/);
 		assert.match(ref, /excludes: --no-tags/);
-		assert.match(ref, /requires: --reason/);
+		assert.match(ref, /requires: --expect-revision/);
 		assert.match(ref, /--invocation; operation-command: invocation identity/);
 		assert.match(ref, /--json; type: switch; operation-command: JSON ending output/);
 	});
