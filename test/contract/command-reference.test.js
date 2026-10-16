@@ -16,7 +16,8 @@ describe("OC6 - command-reference (D3-E1)", () => {
 		assert.match(ref, /call-bound: --timeout\n/);
 		assert.match(ref, /prepare-time: --connect-timeout\n/);
 		// Every setting: flag, variable, required or default, repeats, secret, type with valid values.
-		assert.match(ref, /--host; type: string \(pattern: \^\[a-z0-9\]\[a-z0-9-\]\{0,62\}\$\); variable: FIX_HOST; default: "host-a"/);
+		assert.match(ref, /--host; type: string \(pattern: \^\[a-z0-9\]\[a-z0-9\.-\]\{0,62\}\$\); variable: FIX_HOST; required/);
+		assert.match(ref, /--service; type: string \(pattern: \^\[a-z0-9\]\[a-z0-9-\]\{0,62\}\$\); variable: FIX_SERVICE; default: "store"/);
 		assert.match(ref, /--url; type: url \(schemes: ws, wss\); variable: FIX_URL; default: "ws:\/\/127\.0\.0\.1:47100\/agp"/);
 		assert.match(ref, /--identity; type: string \([^)]+\); variable: FIX_IDENTITY; required/);
 		assert.match(ref, /--token; type: string \([^)]+\); variable: FIX_TOKEN; default: "public"; secret/);
