@@ -44,7 +44,7 @@ const contractRows = () => {
 	return rows;
 };
 
-test("every contract row is served by an export or deferred with a ruling, never both; every fenced row is served; only command-reference is deferred", () => {
+test("every contract row is served by an export or deferred with a ruling, never both; every fenced row is served; none is deferred", () => {
 	const rows = contractRows();
 	assert.deepEqual(rows, FENCED);
 	const served = new Set(Object.values(map.paths).flatMap((e) => Object.values(e.exports)).flatMap((x) => x.serves));
