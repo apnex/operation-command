@@ -40,7 +40,7 @@ The trait column names any trait a system takes on by using the capability.
 | `command-reference` | provides | none | A reference of every command, its flags, their variables, defaults and valid values is generated from the declaration, never written beside it. | none |
 
 The component holds nothing between runs, coordinates no actors and contains no model, so none of its capabilities brings a trait.\
-In zorg's Delta 1, all rows but `command-reference` are built, for zorg's six commands; `command-reference` is left out of Delta 1, which drawv2's command line, generating its help from its manifest, needs.
+In zorg's Delta 1, all rows but `command-reference` are built, for zorg's six commands; `command-reference` is built in zorg's Delta 3 (`D57`).
 
 ---
 
@@ -125,9 +125,10 @@ A secret setting is never written: whoever runs the repeat supplies it again, by
 The plain form prints `repeat` as one command line: the program's name as declared, then each element of `repeat`, each of them - the program's name included - as one shell word in single quotes, each single quote within it written `'\''`, so a program's name holding a space or a quote runs as itself.\
 Tested by: `E19`, in `test/contract/repeat-command-line.test.js`, which runs each printed repeat through the real parser and compares the settings and flags it reads with the first run's, for a program's name holding a space and a single quote, whose plain repeat, split into words as a POSIX shell splits it, names exactly that program with the JSON array's arguments unchanged, for an argument holding spaces and quotes, settings taken from flags, from variables and from defaults, the variables then changed or unset before the repeat is run, a duration setting, a switch on and a switch off, a repeating setting, a setting with no value, a secret setting supplied again, an invocation given as `--invocation <identity>` and as `--invocation=<identity>`, a repeat that itself ends unknown, which gives a `repeat` with one `--invocation`, and a command that changes nothing, each in its JSON and its plain form.
 
-**OC6 - The reference, outside Delta 1.**\
-`command-reference` generates the reference of every command from the declaration.\
-Verified as a design under `E13`; its executable test, `test/contract/command-reference.test.js`, is owed with the capability, which Delta 1 leaves out.
+**OC6 - The reference (`D57`).**\
+`command-reference` generates a deterministic reference of the program from its declaration alone, offered as `program.reference()` on the `Program` returned by `declareProgram(declaration)` and as `formatReference(declaration)`, which validates the declaration as `declareProgram` does before formatting it.\
+The reference is plain text ending in a newline, stating in order: the program's name; its settings in declared order - each flag, its environment variable when declared, `required` or `default: <value>` when declared, `repeats` and `secret` when true, its type and valid values (`string` with `pattern`, `integer` with `min` to `max`, `duration` with `min` to `max`, `url` with `schemes` and optional `pattern`, or `switch`), and its description when declared; and its commands in declared order - each command's name, `operation: <operation>` and `changes: true | false` for an invoking command or `local` for a local command, its description when declared, its own flags in declared order (with `required`, `repeats`, `excludes`, `requires`, type and description), its groups (`exactly-one` and `at-least-one`), and, on every invoking command, operation-command's own `--invocation` and `--json` flags.\
+Tested by: `D3-E1`, in `test/contract/command-reference.test.js`, checking that every part of a declaration appears in the generated reference, that changing any declared setting, command, flag, group, relation, type, bound, pattern or description changes the generated reference, and that `formatReference` refuses an invalid declaration with `DeclarationError`.
 
 **OC7 - The whole path, and what zorg composes.**\
 `test/contract/integrated-commands.test.js` runs a fixture application's declared commands, and the printed repeats of their unknown endings, through operation-call over AGP's production in-process carrier, comparing the input and invocation identity the operation receives, and the output, with the declaration's.\
@@ -141,8 +142,7 @@ Tested by: `E19`, in that file; and `E15`, in zorg's `test/e2e/command-configura
 ## Reference
 
 This repository, `apnex/operation-command`, private until its first working code is certified.\
-The package `@apnex/operation-command` exports `declareProgram`, which checks a declaration and runs one command of it, `DeclarationError`, `EXIT_STATUS`, `INTERRUPTED_LINE`, `RUN_FAILED` and `systemCommandClock`; `@apnex/operation-command/process` exports `runProcess`, which runs a declared program as a Node process, as `export-map.json` records.\
-`command-reference` is deferred under zorg's `D37`.\
+The package `@apnex/operation-command` exports `declareProgram`, which checks a declaration, runs one command of it and formats its reference, `formatReference`, `DeclarationError`, `EXIT_STATUS`, `INTERRUPTED_LINE`, `RUN_FAILED` and `systemCommandClock`; `@apnex/operation-command/process` exports `runProcess`, which runs a declared program as a Node process, as `export-map.json` records.\
 It depends on `@apnex/operation-call` and `@apnex/shape-check` through `file:` links, and imports no module particular to one runtime outside its process adapter.
 
 ---
