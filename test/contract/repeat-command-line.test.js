@@ -203,6 +203,18 @@ describe("OC5 - the repeat of a parts command, from what resume gives (D4-E8)", 
 		assert.deepEqual(diagnostics, []);
 	});
 
+	test("D4-E8: flags resume adds that were not given follow the flags given in the order the command declares them, whatever order resume names them in", async () => {
+		const made = program(() => ({ quiet: true, for: "2s", max: "3" }));
+		const { record, words, again, diagnostics } = await repeated(made, ["follow", "--since", "1", "--tag", "t"]);
+		assert.deepEqual(record.repeat, ["follow", ...SETTINGS_WRITTEN, "--json", "--since", "1", "--tag", "t", "--max", "3", "--for", "2s", "--quiet"]);
+		assert.deepEqual(words.slice(1), ["follow", ...SETTINGS_WRITTEN, "--since", "1", "--tag", "t", "--max", "3", "--for", "2s", "--quiet"]);
+		const line = (await runParts(made.program, ["follow", "--since", "1", "--tag", "t"])).io.stdoutText.split("\n").find((l) => l.startsWith("repeat: "));
+		assert.equal(line, `repeat: ${words.map((w) => `'${w}'`).join(" ")}`);
+		assert.deepEqual(record.resume, { quiet: true, for: "2s", max: "3" });
+		for (const flags of again) assert.deepEqual({ since: flags.since, tag: flags.tag, max: flags.max, for: flags.for, quiet: flags.quiet }, { since: 1, tag: ["t"], max: 3, for: 2000, quiet: true });
+		assert.deepEqual(diagnostics, []);
+	});
+
 	test("D4-E8: a resume that turns a switch on, and one that names nothing, continue as it says", async () => {
 		const on = await repeated(program(() => ({ quiet: true })), ["follow", "--since", "2"]);
 		assert.deepEqual(on.record.repeat, ["follow", ...SETTINGS_WRITTEN, "--json", "--since", "2", "--quiet"]);

@@ -320,6 +320,7 @@ async function runInvoking(program: CompiledProgram, read: ReadCommand, io: Comm
 	let partsTaken = 0;
 	let lastPart: JsonValue | null = null;
 	let wordPartFailed = false;
+	let partWriteFailed = false;
 	let endingWriteFailed = false;
 	const closePrinting = (why: string): void => {
 		if (!printing) return;
@@ -329,7 +330,11 @@ async function runInvoking(program: CompiledProgram, read: ReadCommand, io: Comm
 	};
 	const out = command.parts ? new CountedOutput(io.stdout, (error, ending) => {
 		if (!ending) {
-			closePrinting(`standard output could not take a part: ${describe(error, true)}`);
+			// Reported once, whenever it comes: while printing is open it closes it; after, it is said alone.
+			if (partWriteFailed) return;
+			partWriteFailed = true;
+			if (printing) closePrinting(`standard output could not take a part: ${describe(error, true)}`);
+			else diagnose(`diagnostic: standard output could not take a part: ${describe(error, true)}`);
 			return;
 		}
 		if (endingWriteFailed) return;

@@ -6,6 +6,9 @@
 //   broken-output  - waits for the reader of standard output to go, then passes on 50 parts and answers.
 //   memory         - passes on 200000 small parts, measuring the heap after garbage collection at 20000 and at
 //                    200000, through the adapter's real writes to a file.
+//   late-part-failure, late-ending-failure - one part, then answered; the write of the part, or of the ending,
+//                    is written but calls back with an error 50 ms later, after run has settled and the ending
+//                    has been handed over.
 import fs from "node:fs";
 import v8 from "node:v8";
 import vm from "node:vm";
@@ -32,7 +35,19 @@ if (scenario.kind === "held-callbacks") {
 	};
 }
 
+const lateFailure = { "late-part-failure": '{"part"', "late-ending-failure": '{"ending"' }[scenario.kind];
+if (lateFailure !== undefined) {
+	const write = process.stdout.write.bind(process.stdout);
+	process.stdout.write = (chunk, encoding, callback) => {
+		const done = typeof encoding === "function" ? encoding : callback;
+		if (!String(chunk).startsWith(lateFailure)) return write(chunk, done);
+		return write(chunk, () => setTimeout(() => done?.(new Error("the write failed late")), 50));
+	};
+}
+
 const runs = {
+	"late-part-failure": async ({ onPart }) => { onPart({ through: 1 }); return ending({ ending: "answered", answer: { position: 1 } }); },
+	"late-ending-failure": async ({ onPart }) => { onPart({ through: 1 }); return ending({ ending: "answered", answer: { position: 1 } }); },
 	"held-callbacks": async ({ onPart, signal }) => {
 		let aborts = 0;
 		signal.addEventListener("abort", () => aborts++);

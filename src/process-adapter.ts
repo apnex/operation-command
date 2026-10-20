@@ -70,9 +70,11 @@ function writer(stream: NodeJS.WriteStream, outstanding: Outstanding): (text: st
 		const written = new Promise<void>((resolve, reject) => {
 			try {
 				stream.write(text, (error) => {
-					outstanding.end();
 					if (error) reject(error);
 					else resolve();
+					// Counted settled only after the reactions to its promise have run, so a diagnostic one of them
+					// writes is begun before the process may exit.
+					setImmediate(() => outstanding.end());
 				});
 			} catch (error) {
 				outstanding.end();

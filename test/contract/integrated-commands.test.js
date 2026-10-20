@@ -4,6 +4,7 @@
 // receives, and the output, with the declaration's; with interruptions, sent as real signals, before the
 // send is admitted, after admission and after the ending, each reporting the call layer's ending unchanged.
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import { describe, test } from "node:test";
 import { sleep } from "../support/clock-timer.js";
 import { INTEGRATED_COMMAND, plainFacts, programDirectory, runShellLine, shellWords, start } from "../support/run-command.js";
@@ -316,6 +317,11 @@ describe("OC7 - a parts command through the real call layer (D4-E8)", { concurre
 	test("D4-E8: interrupted after its first part, a parts command cancels the call, the host's signal fires, and the ending the call layer gives is printed with its status", async () => {
 		const command = begin(["watch", "--count", "1", "--until-cancel", "--json"]);
 		await command.waitFor("host-waiting");
+		// Interrupted only once its first part is seen printed on standard output.
+		for (let i = 0; !fs.readFileSync(command.stdoutFile, "utf8").startsWith('{"part":1,'); i++) {
+			if (i > 4000) assert.fail("the first part was never printed");
+			await sleep(5);
+		}
 		command.signal("SIGINT");
 		const result = await command.ended;
 		assert.deepEqual([result.status, result.signal], [0, null], result.stderr);

@@ -52,7 +52,7 @@ export function start(file, args, { env = {}, scenario, record = scratch("record
 		});
 	});
 	return {
-		child, record, ended,
+		child, record, ended, stdoutFile: out,
 		records: () => readRecords(record),
 		/** Waits, on the real clock with a wide margin, until the record file holds an event. */
 		async waitFor(event, ms = 20_000) {

@@ -71,9 +71,11 @@ describe("printing parts before the ending", () => {
 			return typeof answer === "string" ? `last: ${answer}\n` : `item ${answer.n}\nmore ${answer.n}`;
 		};
 		const plain = await runParts(partsProgram({ run, wordPart }), [...FOLLOW, "--quiet"]);
+		assert.deepEqual([plain.status, plain.io.err], [0, []]);
 		assert.deepEqual(plainLines(plain.io.stdoutText).slice(0, 5), ["item 1", "more 1", "item 2", "more 2", "last: three"]);
 		assert.deepEqual(seen, [{ frozen: true, quiet: true }, { frozen: true, quiet: true }, { frozen: true, quiet: true }]);
 		const json = await runParts(partsProgram({ run, wordPart }), [...FOLLOW, "--json"]);
+		assert.deepEqual([json.status, json.io.err], [0, []]);
 		assert.deepEqual(jsonOutput(json.io.stdoutText).parts.map((p) => p.answer), [{ n: 1 }, { n: 2 }, "three"]);
 	});
 
@@ -99,6 +101,7 @@ describe("printing parts before the ending", () => {
 		assert.equal(status, 0);
 		assert.ok(!given.includes("onPart"), given.join(", "));
 		assert.deepEqual(Object.keys(JSON.parse(io.stdoutText)), ["ending", "operation", "invocation", "answer"]);
+		assert.deepEqual(io.err, []);
 	});
 });
 
@@ -129,8 +132,12 @@ describe("the ending of a parts command: partsTaken, lastPart and resume in ever
 				assert.deepEqual(record.lastPart, ran ? { through: 5, change: { id: "e1" } } : null);
 				assert.equal(parts.length, ran ? 1 : 0);
 				if (withResume) assert.deepEqual(record.resume, { since: ran ? "5" : "0" });
+				const said = kind === "run-failed" ? [/^diagnostic: run failed: run broke$/] : [];
+				assert.equal(json.io.diagnostics.length, said.length, json.io.err.join(""));
+				said.forEach((pattern, i) => assert.match(json.io.diagnostics[i], pattern));
 				const plain = await runParts(partsProgram(options), FOLLOW);
 				assert.equal(plain.status, spec.status);
+				assert.equal(plain.io.diagnostics.length, said.length, plain.io.err.join(""));
 				const lines = plainLines(plain.io.stdoutText).slice(ran ? 1 : 0);
 				assert.deepEqual(lines.map(nameOf), head);
 				assert.equal(lines.find((l) => l.startsWith("partsTaken: ")), `partsTaken: ${ran ? 1 : 0}`);
@@ -160,7 +167,8 @@ describe("when printing closes: run observed settled", () => {
 				queueMicrotask(() => onPart({ n: 3 }));
 			}, 1);
 		});
-		const { io } = await runParts(partsProgram({ run }), [...FOLLOW, "--json"]);
+		const { status, io } = await runParts(partsProgram({ run }), [...FOLLOW, "--json"]);
+		assert.deepEqual([status, io.err], [0, []]);
 		const { parts, ending: record } = jsonOutput(io.stdoutText);
 		assert.deepEqual(parts.map((p) => p.answer.n), [1, 2], "the part in the same turn as the fulfilment, before the command's reaction, is printed");
 		assert.equal(record.partsTaken, 2);
@@ -172,6 +180,7 @@ describe("when printing closes: run observed settled", () => {
 		for (const [run, status] of [[returns, 0], [throws, 4]]) {
 			const { status: got, io } = await runParts(partsProgram({ run }), [...FOLLOW, "--json"]);
 			assert.equal(got, status);
+			assert.deepEqual(io.diagnostics.map((l) => /^diagnostic: run failed: run broke$/.test(l)), status === 4 ? [true] : []);
 			const { parts, ending: record } = jsonOutput(io.stdoutText);
 			assert.deepEqual(parts.map((p) => p.answer.n), [1]);
 			assert.equal(record.partsTaken, 1);
@@ -181,7 +190,8 @@ describe("when printing closes: run observed settled", () => {
 	test("D4-E8: a part passed on well after run settled is not printed, and the ending stays the last thing printed", async () => {
 		let later;
 		const run = async ({ onPart }) => { later = onPart; onPart({ n: 1 }); return ANSWERED; };
-		const { io } = await runParts(partsProgram({ run }), [...FOLLOW, "--json"]);
+		const { status, io } = await runParts(partsProgram({ run }), [...FOLLOW, "--json"]);
+		assert.deepEqual([status, io.err], [0, []]);
 		const before = io.stdoutText;
 		later({ n: 2 });
 		await new Promise((resolve) => setTimeout(resolve, 10));
@@ -248,6 +258,7 @@ describe("the bound on unwritten standard output", () => {
 		assert.deepEqual(parts.map((p) => p.part), Array.from({ length: 16 }, (_, i) => i + 1));
 		assert.equal(record.partsTaken, 16);
 		assert.equal(record.lastPart, big(16));
+		assert.equal(io.diagnostics.length, 1);
 		assert.match(io.diagnostics[0], /^diagnostic: standard output would hold more than 16777216 bytes not yet written, so no more parts are printed and the call is cancelled$/);
 	});
 
@@ -267,7 +278,10 @@ describe("the bound on unwritten standard output", () => {
 			await until(() => io.diagnostics.length === 1, "the overflow said");
 			assert.equal(io.unwritten(), printed ? LIMIT : 0);
 			await io.drain();
-			const { ending: record } = jsonOutput((await running).io.stdoutText);
+			const done = await running;
+			assert.equal(done.status, 0);
+			assert.equal(io.diagnostics.length, 1, "the overflow, said once");
+			const { ending: record } = jsonOutput(done.io.stdoutText);
 			assert.equal(record.partsTaken, printed ? 1 : 0, `a line of ${size} bytes`);
 			assert.equal(after, true);
 		}
@@ -288,7 +302,7 @@ describe("the bound on unwritten standard output", () => {
 		const running = runParts(partsProgram({ run }), [...FOLLOW, "--json"], { io });
 		await until(() => io.out.length > 40, "the ending given");
 		await io.drain();
-		await running;
+		assert.equal((await running).status, 0);
 		assert.equal(jsonOutput(io.stdoutText).ending.partsTaken, 40);
 		assert.ok(bytesOf(io.stdoutText) > 40 * 1048576);
 		assert.deepEqual(io.err, []);
@@ -296,7 +310,8 @@ describe("the bound on unwritten standard output", () => {
 
 	test("D4-E8: a write returning no promise is settled as it returns", async () => {
 		const run = async ({ onPart }) => { for (let n = 1; n <= 40; n++) onPart(answerForLine(1048576, n, "x")); return ANSWERED; };
-		const { io } = await runParts(partsProgram({ run }), [...FOLLOW, "--json"]);
+		const { status, io } = await runParts(partsProgram({ run }), [...FOLLOW, "--json"]);
+		assert.equal(status, 0);
 		assert.equal(jsonOutput(io.stdoutText).ending.partsTaken, 40);
 		assert.deepEqual(io.err, []);
 	});
@@ -314,7 +329,9 @@ describe("the bound on unwritten standard output", () => {
 			const running = runParts(partsProgram({ run }), [...FOLLOW, "--json"], { io });
 			await until(() => io.out.length >= (afterReaction ? 3 : 2), "the ending given");
 			await io.drain();
-			const { ending: record } = jsonOutput((await running).io.stdoutText);
+			const done = await running;
+			assert.equal(done.status, 0);
+			const { ending: record } = jsonOutput(done.io.stdoutText);
 			assert.equal(record.partsTaken, afterReaction ? 2 : 1, afterReaction ? "after the reaction" : "before it");
 			assert.equal(io.diagnostics.length, afterReaction ? 0 : 1);
 		}
@@ -329,7 +346,9 @@ describe("the bound on unwritten standard output", () => {
 				onPart(answerForLine(200, 2));
 				return ANSWERED;
 			};
-			const { io: done } = await runParts(partsProgram({ run }), [...FOLLOW, "--json"], { io });
+			const { status, io: done } = await runParts(partsProgram({ run }), [...FOLLOW, "--json"], { io });
+			assert.equal(status, 0);
+			assert.equal(done.diagnostics.length, afterReaction ? 0 : 1);
 			assert.equal(jsonOutput(done.stdoutText).ending.partsTaken, afterReaction ? 2 : 1);
 		}
 	});
@@ -347,6 +366,7 @@ describe("the bound on unwritten standard output", () => {
 		const record = jsonOutput(io.stdoutText).ending;
 		assert.equal(record.answer, answer);
 		assert.equal(record.partsTaken, 1);
+		assert.deepEqual(io.err, []);
 	});
 });
 
@@ -407,27 +427,49 @@ describe("failed writes and parts that are no plain data", () => {
 		const running = runParts(partsProgram({ run }), [...FOLLOW, "--json"], { io });
 		await until(() => io.out.length === 3, "the ending given");
 		await io.drain();
-		const { ending: record } = jsonOutput((await running).io.stdoutText);
+		const done = await running;
+		assert.equal(done.status, 0);
+		const { ending: record } = jsonOutput(done.io.stdoutText);
 		assert.deepEqual([record.partsTaken, record.lastPart], [2, { through: 2 }]);
 		assert.equal(io.diagnostics.length, 1);
 	});
 
-	test("D4-E8: a part passed on after a held write is rejected, before the command's reaction runs, is printed if it fits; after the reaction printing is closed", async () => {
+	test("D4-E8: a part passed on after a held write is rejected, before the command's reaction runs, counts that write unwritten; the rejection then closes printing, said once", async () => {
 		const io = capture({ hold: true });
 		const run = async ({ onPart }) => {
-			onPart(answerForLine(LIMIT - 100, 1));
+			onPart(answerForLine(LIMIT - 20, 1));
 			io.held[0].fail();
-			onPart(answerForLine(50, 2));
+			// 30 bytes with 20 of room: refused only while the rejected write still counts.
+			onPart(answerForLine(30, 2));
 			await tick();
-			onPart(answerForLine(50, 3));
+			onPart(answerForLine(30, 3));
 			return ANSWERED;
 		};
 		const running = runParts(partsProgram({ run }), [...FOLLOW, "--json"], { io });
-		await until(() => io.out.length === 3, "the ending given");
+		await until(() => io.out.length === 2, "the ending given");
 		await io.drain();
-		const { ending: record } = jsonOutput((await running).io.stdoutText);
-		assert.equal(record.partsTaken, 2);
-		assert.equal(io.diagnostics.length, 1);
+		const done = await running;
+		assert.equal(done.status, 0);
+		const { parts, ending: record } = jsonOutput(done.io.stdoutText);
+		assert.deepEqual([parts.length, record.partsTaken], [1, 1]);
+		assert.equal(io.diagnostics.length, 2, io.err.join(""));
+		assert.match(io.diagnostics[0], /^diagnostic: standard output would hold more than 16777216 bytes not yet written/);
+		assert.match(io.diagnostics[1], /^diagnostic: standard output could not take a part: .*the held write failed$/);
+	});
+
+	test("D4-E8: a part's write rejected after run settled is still said, once, and changes nothing printed", async () => {
+		const io = capture({ hold: true });
+		const running = runParts(partsProgram({ run: async ({ onPart }) => { onPart({ through: 1 }); return ANSWERED; } }), [...FOLLOW, "--json"], { io });
+		await until(() => io.held.length === 2, "the part and the ending held");
+		io.held[1].release();
+		const done = await running;
+		assert.equal(done.status, 0);
+		assert.deepEqual(io.err, []);
+		io.held[0].fail();
+		await tick();
+		assert.equal(io.diagnostics.length, 1, io.err.join(""));
+		assert.match(io.diagnostics[0], /^diagnostic: standard output could not take a part: .*the held write failed$/);
+		assert.equal(jsonOutput(io.stdoutText).ending.partsTaken, 1);
 	});
 
 	for (const how of ["throws", "rejects"]) {
@@ -494,8 +536,9 @@ describe("memory", () => {
 		let written = 0;
 		// Each write fulfils at once, so every reaction the command attaches is attached and run.
 		const stdout = (text) => { written += text.length; return Promise.resolve(); };
-		const status = await partsProgram({ run }).run({ args: [...FOLLOW, "--json"], env: ENV, stdout, stderr: () => undefined });
-		assert.equal(status, 0);
+		let errors = "";
+		const status = await partsProgram({ run }).run({ args: [...FOLLOW, "--json"], env: ENV, stdout, stderr: (text) => { errors += text; } });
+		assert.deepEqual([status, errors], [0, ""]);
 		assert.ok(written > 200000 * 64);
 		assert.ok(last - first < 4 * 1024 * 1024, `the heap grew by ${last - first} bytes over 180000 parts`);
 	});
@@ -529,7 +572,7 @@ describe("through the process adapter", () => {
 		assert.equal(parts.length, 16);
 		assert.equal(record.partsTaken, 16);
 		assert.deepEqual(result.records.find((r) => r.event === "parts-passed"), { event: "parts-passed", aborted: true, aborts: 1 });
-		assert.match(result.stderr, /^diagnostic: standard output would hold more than 16777216 bytes not yet written/);
+		assert.match(result.stderr, /^diagnostic: standard output would hold more than 16777216 bytes not yet written[^\n]*\n$/);
 	});
 
 	test("D4-E8: a standard output that breaks fails its writes and leaves the command's exit status its ending's", async () => {
@@ -546,8 +589,20 @@ describe("through the process adapter", () => {
 	test("D4-E8: the memory a command keeps through the process adapter, measured after garbage collection, does not grow with the parts written", async () => {
 		const result = await startPartsProcess("memory").ended;
 		assert.equal(result.status, 0, result.stderr);
+		assert.equal(result.stderr, "");
 		const heap = result.records.find((r) => r.event === "heap");
 		assert.equal(heap.parts, 200000);
 		assert.ok(heap.last - heap.first < 4 * 1024 * 1024, `the heap grew by ${heap.last - heap.first} bytes over 180000 parts`);
 	});
+
+	for (const [kind, said] of [["late-part-failure", "a part"], ["late-ending-failure", "the ending"]]) {
+		test(`D4-E8: a write of ${said} that fails after run has settled and the ending was handed over is said before the process exits, which keeps the ending's status`, async () => {
+			const result = await startPartsProcess(kind).ended;
+			assert.deepEqual([result.status, result.signal], [0, null], result.stderr);
+			assert.equal(jsonOutput(result.stdout).ending.partsTaken, 1);
+			const lines = result.stderr.split("\n").filter((l) => l.length > 0);
+			assert.equal(lines.length, 1, result.stderr);
+			assert.match(lines[0], new RegExp(`^diagnostic: standard output could not take ${said}: .*the write failed late$`));
+		});
+	}
 });
