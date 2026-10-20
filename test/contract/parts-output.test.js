@@ -473,17 +473,37 @@ describe("failed writes and parts that are no plain data", () => {
 	});
 
 	for (const how of ["throws", "rejects"]) {
-		test(`D4-E8: a write of the ending that ${how} leaves the exit status its ending's, with one diagnostic line and no unhandled rejection`, async () => {
+		test(`D4-E8: a write of the ending that ${how} leaves the part printed before it, the ending attempted whole, and the exit status its ending's, with one diagnostic line and no unhandled rejection`, async () => {
 			const isEnding = (text) => text.startsWith('{"ending"');
 			const io = capture(how === "throws" ? { refuse: isEnding } : { reject: isEnding });
 			const run = async ({ onPart }) => { onPart({ n: 1 }); return ending({ ending: "refused", refusal: REFUSAL }); };
 			const { status } = await runParts(partsProgram({ run }), [...FOLLOW, "--json"], { io });
 			await tick();
 			assert.equal(status, 2);
+			assert.equal(io.attempted.length, 2);
+			assert.equal(io.attempted[0], `${JSON.stringify({ part: 1, answer: { n: 1 } })}\n`);
+			assert.equal(io.out[0], io.attempted[0], "the part was taken");
+			const tried = JSON.parse(io.attempted[1]);
+			assert.deepEqual([tried.ending, tried.refusal, tried.partsTaken, tried.lastPart], ["refused", REFUSAL, 1, { n: 1 }]);
 			assert.equal(io.diagnostics.length, 1, io.err.join(""));
 			assert.match(io.diagnostics[0], /^diagnostic: standard output could not take the ending: /);
 		});
 	}
+
+	test("D4-E8: every piece of an ending larger than the bound is given though each write of it rejects, the parts before it printed, with one diagnostic line", async () => {
+		const answer = "\u00e9".repeat(9000000);
+		const io = capture({ reject: (text) => !text.startsWith('{"part"') });
+		const run = async ({ onPart }) => { onPart({ n: 1 }); onPart({ n: 2 }); return ending({ ending: "answered", answer }); };
+		const { status } = await runParts(partsProgram({ run }), [...FOLLOW, "--json"], { io });
+		await tick();
+		assert.equal(status, 0);
+		assert.deepEqual(io.attempted.slice(0, 2), [1, 2].map((n) => `${JSON.stringify({ part: n, answer: { n } })}\n`));
+		const pieces = io.attempted.slice(2);
+		assert.ok(pieces.length >= 2, `the ending in pieces: ${pieces.length}`);
+		const record = JSON.parse(pieces.join(""));
+		assert.deepEqual([record.answer === answer, record.partsTaken, record.lastPart], [true, 2, { n: 2 }]);
+		assert.equal(io.diagnostics.length, 1, io.err.join(""));
+	});
 
 	test("D4-E8: a part whose answer has a getter, a custom prototype or a promise closes printing the same way, with zero getter calls and no unhandled rejection", async () => {
 		let reads = 0;
@@ -590,6 +610,10 @@ describe("through the process adapter", () => {
 		const result = await startPartsProcess("memory").ended;
 		assert.equal(result.status, 0, result.stderr);
 		assert.equal(result.stderr, "");
+		const { parts, ending: record } = jsonOutput(result.stdout);
+		assert.equal(parts.length, 200000, "every part reached standard output");
+		assert.deepEqual([parts[0], parts.at(-1)], [{ part: 1, answer: { n: 1 } }, { part: 200000, answer: { n: 200000 } }]);
+		assert.deepEqual([record.partsTaken, record.lastPart], [200000, { n: 200000 }]);
 		const heap = result.records.find((r) => r.event === "heap");
 		assert.equal(heap.parts, 200000);
 		assert.ok(heap.last - heap.first < 4 * 1024 * 1024, `the heap grew by ${heap.last - heap.first} bytes over 180000 parts`);

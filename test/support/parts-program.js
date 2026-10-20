@@ -73,14 +73,16 @@ export const bytesOf = (value) => Buffer.byteLength(value, "utf8");
  */
 export function capture({ hold = false, refuse, reject, resolved } = {}) {
 	const out = [];
+	const attempted = [];
 	const err = [];
 	const held = [];
 	let highWater = 0;
 	const unwritten = () => held.reduce((sum, h) => sum + h.bytes, 0);
 	return {
-		out, err, held, unwritten,
+		out, attempted, err, held, unwritten,
 		highWater: () => highWater,
 		stdout: (text) => {
+			attempted.push(text);
 			if (refuse?.(text)) throw new Error("standard output refused the text");
 			out.push(text);
 			if (reject?.(text)) return Promise.reject(new Error("standard output broke"));
