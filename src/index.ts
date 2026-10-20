@@ -13,4 +13,4 @@ export { formatReference } from "./reference.js";
 export { DeclarationError, type DeclarationRule } from "./declaration.js";
 export { EXIT_STATUS, RUN_FAILED } from "./endings.js";
 export { systemCommandClock } from "./system-ports.js";
-export type { CommandClient, CommandClock, CommandDeclaration, FlagDeclaration, Flags, FlagValue, GroupDeclaration, InvokingCommandDeclaration, LocalCommandDeclaration, LocalContext, PrepareNotDelivered, PrepareRequest, PrepareResult, ProgramDeclaration, RunContext, SettingDeclaration, ValueType } from "./declaration-types.js";
+export type { CommandClient, CommandClock, CommandDeclaration, FlagDeclaration, Flags, FlagValue, GroupDeclaration, InvokingCommandDeclaration, LocalCommandDeclaration, LocalContext, PrepareNotDelivered, PrepareRequest, PrepareResult, ProgramDeclaration, ResumeFlags, RunContext, SettingDeclaration, ValueType } from "./declaration-types.js";

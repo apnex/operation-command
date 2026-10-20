@@ -60,6 +60,10 @@ export interface CompiledCommand {
 	readonly groups: readonly CompiledGroup[];
 	readonly run: (context: never) => unknown;
 	readonly word: ((answer: never, flags: never) => unknown) | undefined;
+	/** Whether its answer may come in parts (OC1, OC4). */
+	readonly parts: boolean;
+	readonly wordPart: ((answer: never, flags: never) => unknown) | undefined;
+	readonly resume: ((lastPart: never, flags: never) => unknown) | undefined;
 	readonly description: string | undefined;
 }
 
@@ -256,13 +260,19 @@ function checkCommand(part: unknown, settings: readonly CompiledFlag[]): Compile
 	const local = part["local"] === true;
 	if (part["local"] !== undefined && typeof part["local"] !== "boolean") fail("command-form", `${what}'s local is true or false`);
 	if (local) onlyFields(part, ["name", "local", "flags", "groups", "run", "description"], what);
-	else onlyFields(part, ["name", "local", "operation", "changes", "flags", "groups", "run", "word", "description"], what);
+	else onlyFields(part, ["name", "local", "operation", "changes", "flags", "groups", "run", "word", "parts", "wordPart", "resume", "description"], what);
 	checkDescription(part, what);
 	if (typeof part["run"] !== "function") fail("command-form", `${what} has no run function`);
 	if (!local) {
 		if (typeof part["operation"] !== "string" || !OPERATION_PATTERN.test(part["operation"])) fail("operation-name", `${what}'s operation ${quote(part["operation"])} is not a name matching ^[a-z0-9][a-z0-9-]{0,62}$`);
 		if (typeof part["changes"] !== "boolean") fail("command-form", `${what} says whether it changes anything, as changes: true or false`);
 		if (part["word"] !== undefined && typeof part["word"] !== "function") fail("command-form", `${what}'s word is a function`);
+		if (part["parts"] !== undefined && typeof part["parts"] !== "boolean") fail("command-form", `${what}'s parts is true or false`);
+		for (const key of ["wordPart", "resume"]) {
+			if (part[key] === undefined) continue;
+			if (typeof part[key] !== "function") fail("command-form", `${what}'s ${key} is a function`);
+			if (part["parts"] !== true) fail("command-form", `${what} gives ${key}, which only a command declared parts: true has`);
+		}
 	}
 	const declared = part["flags"] ?? [];
 	if (!Array.isArray(declared)) return fail("command-form", `${what}'s flags are a list`);
@@ -279,6 +289,9 @@ function checkCommand(part: unknown, settings: readonly CompiledFlag[]): Compile
 		name: name as string, local, operation: local ? "" : part["operation"] as string, changes: local ? false : part["changes"] as boolean,
 		flags: Object.freeze(flags), groups, run: part["run"] as CompiledCommand["run"],
 		word: part["word"] as CompiledCommand["word"],
+		parts: !local && part["parts"] === true,
+		wordPart: part["wordPart"] as CompiledCommand["wordPart"],
+		resume: part["resume"] as CompiledCommand["resume"],
 		description: part["description"] as string | undefined,
 	});
 }

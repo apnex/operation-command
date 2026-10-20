@@ -10,6 +10,7 @@ import { sleep, within } from "../support/clock-timer.js";
 import { CYCLIC_ERRORS, fixtureDeclaration, MALFORMED } from "../support/fixture-program.js";
 import { BASE_ENV, plainFacts, runFixture, startFixture } from "../support/run-command.js";
 import { DATA_FORMS, dataEnding, oneGetterEnding, GETTER_FORMS, gettersEnding } from "../support/structural-ending.js";
+import { ending as partsEnding, partsProgram, runParts } from "../support/parts-program.js";
 
 const INVOCATION = /^[0-9]{13}-[0-9a-f]{16}$/;
 const GIVEN = "1791540000000-3f9a0c1d2b4e5f60";
@@ -593,5 +594,31 @@ describe("OC3 - what prepare settles to: the string ready, or a not-delivered en
 				assert.deepEqual(events(r).filter((e) => e !== "clock-began"), ["prepare", "prepare-aborted", "prepare-settled"], "prepare settled after the interruption, and nothing more was called");
 			}
 		}
+	});
+});
+
+describe("OC3 - what a parts command's run is given (D4-E8)", () => {
+	test("D4-E8: run of a parts command is given onPart, a function, with the call's other settings; run of any other command is given none", async () => {
+		const seen = {};
+		const record = (name) => async (context) => {
+			seen[name] = { keys: Object.keys(context), onPart: typeof context.onPart, frozen: Object.isFrozen(context), bound: context.bound, signal: context.signal instanceof AbortSignal };
+			return partsEnding({ ending: "answered", answer: null }, name);
+		};
+		const program = partsProgram({ run: record("follow"), readRun: record("read") });
+		assert.equal((await runParts(program, ["follow", "--since", "0", "--timeout", "3s"])).status, 0);
+		assert.equal((await runParts(program, ["read", "--timeout", "3s"])).status, 0);
+		assert.deepEqual(seen.follow, { keys: ["client", "command", "operation", "flags", "bound", "invocation", "repeat", "signal", "onPart"], onPart: "function", frozen: true, bound: 3000, signal: true });
+		assert.deepEqual(seen.read, { keys: ["client", "command", "operation", "flags", "bound", "invocation", "repeat", "signal"], onPart: "undefined", frozen: true, bound: 3000, signal: true });
+	});
+
+	test("D4-E8: onPart returns nothing and never throws, whatever it is given and whenever it is called", async () => {
+		const returned = [];
+		const program = partsProgram({ run: async ({ onPart }) => {
+			returned.push(onPart({ n: 1 }), onPart(undefined), onPart({ get x() { throw new Error("a getter threw"); } }), onPart(Symbol("s")));
+			return partsEnding({ ending: "answered", answer: null });
+		} });
+		const { status } = await runParts(program, ["follow", "--since", "0"]);
+		assert.equal(status, 0);
+		assert.deepEqual(returned, [undefined, undefined, undefined, undefined]);
 	});
 });

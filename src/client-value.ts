@@ -16,40 +16,57 @@ export type Settled = { readonly value: unknown } | { readonly error: unknown };
  * value is asked whether it is a native promise settles it with that error at once, the value never read as
  * though nothing threw; what was thrown, the value, and an error attaching or rejecting have their native
  * promises observed. Never rejects.
+ *
+ * `observed`, when given, is called once, at the moment the settling is observed: at once for anything but a
+ * native promise, and otherwise inside the reaction attached to the promise here, before anything awaiting
+ * the result runs (OC4: a parts command's printing closes then).
  */
-export function settle(value: unknown): Promise<Settled> {
-	if (value === null || typeof value !== "object") return Promise.resolve({ value });
+export function settle(value: unknown, observed?: () => void): Promise<Settled> {
+	if (value === null || typeof value !== "object") {
+		observed?.();
+		return Promise.resolve({ value });
+	}
 	try {
-		if (!(value instanceof Promise)) return Promise.resolve({ value });
+		if (!(value instanceof Promise)) {
+			observed?.();
+			return Promise.resolve({ value });
+		}
 	} catch (error) {
 		observePromises(error);
 		observePromises(value);
+		observed?.();
 		return Promise.resolve({ error });
 	}
 	return new Promise((done) => {
 		try {
 			Reflect.apply(Promise.prototype.then, value, [
-				(fulfilled: unknown) => done({ value: fulfilled }),
+				(fulfilled: unknown) => {
+					observed?.();
+					done({ value: fulfilled });
+				},
 				(error: unknown) => {
+					observed?.();
 					observePromises(error);
 					done({ error });
 				},
 			]);
 		} catch (error) {
 			// A promise whose own `constructor` or `Symbol.species` threw before its reactions were installed.
+			observed?.();
 			observePromises(error);
 			done({ error });
 		}
 	});
 }
 
-/** Settles what a call returns, or the error it throws, as an outcome; never rejects. */
-export function outcomeOf(call: () => unknown): Promise<Settled> {
+/** Settles what a call returns, or the error it throws, as an outcome; never rejects. `observed` as `settle` says. */
+export function outcomeOf(call: () => unknown, observed?: () => void): Promise<Settled> {
 	let returned: unknown;
 	try {
 		returned = call();
 	} catch (error) {
+		observed?.();
 		return Promise.resolve({ error });
 	}
-	return settle(returned);
+	return settle(returned, observed);
 }

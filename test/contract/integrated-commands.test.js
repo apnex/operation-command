@@ -243,7 +243,7 @@ describe("OC7 - reading and preparing on the real path (E19)", { concurrency: 3 
 
 	test("each kind of usage error, groups with none and too many included, exits 1 with one line on standard error and nothing on standard output, the kinds alternating with --json and without, nothing prepared or invoked", async () => {
 		const cases = [
-			[[], /^usage: no command was given; the commands are publish, read, find, label\n$/],
+			[[], /^usage: no command was given; the commands are publish, read, find, label, watch\n$/],
 			[["unpublish"], /^usage: unknown command "unpublish"/],
 			[["read", "--name", "a", "--colour", "red"], /^usage: unknown flag "--colour" for the command read\n$/],
 			[["read", "a"], /^usage: unexpected argument "a" to the command read/],
@@ -296,5 +296,33 @@ describe("OC7 - reading and preparing on the real path (E19)", { concurrency: 3 
 		assert.ok(r.records.some((x) => x.event === "prepare"));
 		assert.ok(!r.records.some((x) => x.event === "run"));
 		assert.deepEqual(received(r), []);
+	});
+});
+
+describe("OC7 - a parts command through the real call layer (D4-E8)", { concurrency: 2 }, () => {
+	test("D4-E8: a parts command prints a real host's parts before its ending, in both forms", async () => {
+		const json = await run(["watch", "--count", "3", "--json"]);
+		assert.deepEqual([json.status, json.stderr], [0, ""]);
+		const lines = json.stdout.split("\n").filter((l) => l.length > 0).map((l) => JSON.parse(l));
+		assert.deepEqual(lines.slice(0, 3), [1, 2, 3].map((n) => ({ part: n, answer: { n, service: "store" } })));
+		const invocation = only(received(json), "request").invocation;
+		assert.deepEqual(lines[3], { ending: "answered", operation: "stream", invocation, answer: { parts: 3, stopped: false }, partsTaken: 3, lastPart: { n: 3, service: "store" } });
+		const plain = await run(["watch", "--count", "2"]);
+		assert.equal(plain.status, 0);
+		assert.match(plain.stdout, /^part 1 from store\npart 2 from store\nending: answered\n/);
+		assert.match(plain.stdout, /\npartsTaken: 2\nlastPart: \{"n":2,"service":"store"\}\n$/);
+	});
+
+	test("D4-E8: interrupted after its first part, a parts command cancels the call, the host's signal fires, and the ending the call layer gives is printed with its status", async () => {
+		const command = begin(["watch", "--count", "1", "--until-cancel", "--json"]);
+		await command.waitFor("host-waiting");
+		command.signal("SIGINT");
+		const result = await command.ended;
+		assert.deepEqual([result.status, result.signal], [0, null], result.stderr);
+		assert.ok(result.records.some((r) => r.event === "host-signal"), "the cancel reached the host and fired its signal");
+		const lines = result.stdout.split("\n").filter((l) => l.length > 0).map((l) => JSON.parse(l));
+		assert.deepEqual(lines[0], { part: 1, answer: { n: 1, service: "store" } });
+		assert.deepEqual([lines[1].ending, lines[1].answer, lines[1].partsTaken, lines[1].lastPart], ["answered", { parts: 1, stopped: true }, 1, { n: 1, service: "store" }]);
+		assert.equal(result.stderr, "");
 	});
 });

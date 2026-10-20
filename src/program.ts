@@ -14,12 +14,13 @@ import type { CommandClock, Flags, LocalContext, ProgramDeclaration, RunContext 
 import type { JsonValue } from "@apnex/operation-call";
 import { observePromises, readPlainJson } from "@apnex/shape-check";
 import { outcomeOf, type Settled } from "./client-value.js";
-import { EXIT_STATUS, printEnding, readEnding, RUN_FAILED, type Ending, type Wording } from "./endings.js";
+import { EXIT_STATUS, printEnding, readEnding, RUN_FAILED, wordAnswer, type Ending, type PartsFacts, type Wording } from "./endings.js";
 import { readCommand, type ReadCommand } from "./reading.js";
 import { formatCompiledReference } from "./reference.js";
 import { repeatArguments } from "./repeat.js";
+import { resumeFlags } from "./resume.js";
 import { systemCommandClock, systemIdentities } from "./system-ports.js";
-import { describe, DIAGNOSTIC_LIMIT, diagnosticLine, singleLine } from "./value-text.js";
+import { describe, DIAGNOSTIC_LIMIT, diagnosticLine, singleLine, writeJson } from "./value-text.js";
 
 /** Where interruptions come from: the process's `SIGINT` and `SIGTERM`, or a test's. */
 export interface Interruptions {
@@ -32,10 +33,14 @@ export interface CommandIo {
 	/** The arguments that follow the program's name. */
 	readonly args: readonly string[];
 	readonly env: { readonly [name: string]: string | undefined };
-	/** Writes to standard output, which carries only an ending. */
-	readonly stdout: (text: string) => void;
+	/**
+	 * Writes to standard output, which carries only an ending and, for a parts command, the parts before it. It
+	 * may return a native promise that settles once the text is written, rejecting if it could not be; until
+	 * then a parts command counts the text as unwritten (OC4). A write returning anything else is written.
+	 */
+	readonly stdout: (text: string) => void | Promise<void>;
 	/** Writes to standard error, which carries diagnostics, usage errors and the report of an interruption before `run`. */
-	readonly stderr: (text: string) => void;
+	readonly stderr: (text: string) => void | Promise<void>;
 	readonly interruptions?: Interruptions;
 	/** The clock port; `performance.now()` by default (OC1). */
 	readonly clock?: CommandClock;
@@ -54,6 +59,137 @@ export interface Program {
 
 /** The line reporting an interruption before `run` (OC4). */
 export const INTERRUPTED_LINE = "interrupted: nothing was invoked";
+
+/** The most bytes of standard output a parts command keeps unwritten (OC4). */
+export const PARTS_UNWRITTEN_LIMIT = 16777216;
+
+/** The UTF-8 bytes of a text, a lone surrogate counted as the three of U+FFFD, as it is written. */
+export function utf8Length(text: string): number {
+	let bytes = 0;
+	for (let i = 0; i < text.length; i++) {
+		const unit = text.charCodeAt(i);
+		if (unit < 0x80) bytes += 1;
+		else if (unit < 0x800) bytes += 2;
+		else if (unit >= 0xd800 && unit <= 0xdbff && i + 1 < text.length && (text.charCodeAt(i + 1) & 0xfc00) === 0xdc00) {
+			bytes += 4;
+			i++;
+		} else bytes += 3;
+	}
+	return bytes;
+}
+
+/** Observes a native promise a write returned, so its rejection is never unhandled; anything else is left alone. */
+function observeReturned(value: unknown): void {
+	try {
+		if (value instanceof Promise) Reflect.apply(Promise.prototype.then, value, [undefined, () => undefined]);
+	} catch (error) {
+		observePromises(error);
+	}
+}
+
+/**
+ * A parts command's standard output (OC4): each text it is given counts as unwritten, by its UTF-8 bytes, from
+ * the moment it is handed to the write until the reaction attached here to the native promise the write
+ * returned runs; a write that returns no native promise, or throws, settles as it returns. Nothing of a write
+ * is kept once it has settled.
+ */
+class CountedOutput {
+	#unwritten = 0;
+	#waiters: (() => void)[] = [];
+	constructor(
+		private readonly write: (text: string) => unknown,
+		private readonly failed: (error: unknown, ending: boolean) => void,
+	) {}
+
+	get unwritten(): number {
+		return this.#unwritten;
+	}
+
+	/** Hands a text to the write; false when the write threw, true otherwise, whatever becomes of it after. */
+	give(text: string, bytes: number, ending: boolean): boolean {
+		this.#unwritten += bytes;
+		let returned: unknown;
+		try {
+			returned = this.write(text);
+		} catch (error) {
+			this.#release(bytes);
+			observePromises(error, DIAGNOSTIC_LIMIT);
+			this.failed(error, ending);
+			return false;
+		}
+		let native = false;
+		try {
+			native = returned instanceof Promise;
+		} catch (error) {
+			observePromises(error);
+		}
+		if (!native) {
+			this.#release(bytes);
+			return true;
+		}
+		try {
+			Reflect.apply(Promise.prototype.then, returned, [
+				() => this.#release(bytes),
+				(error: unknown) => {
+					this.#release(bytes);
+					observePromises(error, DIAGNOSTIC_LIMIT);
+					this.failed(error, ending);
+				},
+			]);
+		} catch (error) {
+			this.#release(bytes);
+			observePromises(error);
+		}
+		return true;
+	}
+
+	/** Settles once some write settles. */
+	settled(): Promise<void> {
+		return new Promise((resolve) => this.#waiters.push(resolve));
+	}
+
+	#release(bytes: number): void {
+		this.#unwritten -= bytes;
+		const waiters = this.#waiters;
+		this.#waiters = [];
+		for (const waiter of waiters) waiter();
+	}
+}
+
+/** The UTF-8 bytes of the code point at `i`, and how many code units it takes. */
+function codePointAt(text: string, i: number): readonly [number, number] {
+	const unit = text.charCodeAt(i);
+	if (unit < 0x80) return [1, 1];
+	if (unit < 0x800) return [2, 1];
+	if (unit >= 0xd800 && unit <= 0xdbff && i + 1 < text.length && (text.charCodeAt(i + 1) & 0xfc00) === 0xdc00) return [4, 2];
+	return [3, 1];
+}
+
+/**
+ * Gives a parts command's ending to standard output in pieces split between code points, each only while the
+ * unwritten bytes stay within the bound, waiting for an earlier write to settle before the next (OC4); settles
+ * once the last piece is given.
+ */
+async function giveEnding(out: CountedOutput, text: string): Promise<void> {
+	let from = 0;
+	while (from < text.length) {
+		const room = PARTS_UNWRITTEN_LIMIT - out.unwritten;
+		let to = from;
+		let bytes = 0;
+		while (to < text.length) {
+			const [size, units] = codePointAt(text, to);
+			if (bytes + size > room) break;
+			bytes += size;
+			to += units;
+		}
+		if (to === from) {
+			await out.settled();
+			continue;
+		}
+		out.give(text.slice(from, to), bytes, true);
+		from = to;
+	}
+}
 
 /** A new invocation identity, as zorg's target EM11 writes it. */
 function newInvocation(identities: IdentitySource): string {
@@ -168,13 +304,100 @@ async function runInvoking(program: CompiledProgram, read: ReadCommand, io: Comm
 	const repeat = command.changes && read.invocation !== undefined;
 	const flags: Flags = read.flags;
 	const json = read.json;
-	const repeatArgs = repeatArguments(read, invocation);
-	// A diagnostic is always one line, cut at 1000 characters (OC4).
-	const diagnose = (text: string): void => { io.stderr(`${diagnosticLine(text)}\n`); };
-	const report = (ending: Ending): number => {
-		const printed = printEnding(ending, { operation: command.operation, invocation, repeat: repeatArgs, json, program: program.name, word: command.word as Wording | undefined, flags });
+	// A diagnostic is always one line, cut at 1000 characters (OC4); standard error's failure is no ending's.
+	const diagnose = (text: string): void => {
+		try {
+			observeReturned(io.stderr(`${diagnosticLine(text)}\n`));
+		} catch (error) {
+			observePromises(error);
+		}
+	};
+
+	// A parts command's printing of parts (OC4): open until run is observed settled, an overflow, a part that is
+	// no plain data, or a failed write closes it for good, the last three firing run's signal once.
+	const controller = new AbortController();
+	let printing = command.parts;
+	let partsTaken = 0;
+	let lastPart: JsonValue | null = null;
+	let wordPartFailed = false;
+	let endingWriteFailed = false;
+	const closePrinting = (why: string): void => {
+		if (!printing) return;
+		printing = false;
+		diagnose(`diagnostic: ${why}, so no more parts are printed and the call is cancelled`);
+		if (!controller.signal.aborted) controller.abort();
+	};
+	const out = command.parts ? new CountedOutput(io.stdout, (error, ending) => {
+		if (!ending) {
+			closePrinting(`standard output could not take a part: ${describe(error, true)}`);
+			return;
+		}
+		if (endingWriteFailed) return;
+		endingWriteFailed = true;
+		diagnose(`diagnostic: standard output could not take the ending: ${describe(error, true)}`);
+	}) : undefined;
+	const onPart = (answer: unknown): void => {
+		try {
+			if (!printing || out === undefined) return;
+			const reading = readPlainJson(answer);
+			if (!reading.ok) {
+				closePrinting(`a part's answer is ${describe(answer)}, not plain data`);
+				return;
+			}
+			const number = partsTaken + 1;
+			let text: string;
+			if (json) text = `${writeJson({ part: number, answer: reading.value })}\n`;
+			else {
+				const worded = command.wordPart === undefined ? undefined : wordAnswer(command.wordPart as Wording, reading.value, flags, "wordPart");
+				if (worded !== undefined && worded.ok) text = `${worded.text.replace(/\n$/, "")}\n`;
+				else {
+					if (worded !== undefined && !wordPartFailed) {
+						wordPartFailed = true;
+						diagnose(`diagnostic: a part could not be worded, so it and any later part that cannot be are printed as JSON: ${worded.why}`);
+					}
+					text = `part: ${writeJson(reading.value)}\n`;
+				}
+			}
+			const bytes = utf8Length(text);
+			if (out.unwritten + bytes > PARTS_UNWRITTEN_LIMIT) {
+				closePrinting(`standard output would hold more than ${PARTS_UNWRITTEN_LIMIT} bytes not yet written`);
+				return;
+			}
+			// A part counts as printed once its text is handed over without the write throwing.
+			if (!out.give(text, bytes, false)) return;
+			partsTaken = number;
+			lastPart = reading.value;
+		} catch (error) {
+			// onPart never throws; a fault here is the command's, and reported as one line.
+			observePromises(error);
+			diagnose(`diagnostic: a part could not be printed: ${describe(error, true)}`);
+		}
+	};
+
+	const report = async (ending: Ending): Promise<number> => {
+		let facts: PartsFacts | undefined;
+		let repeatArgs: readonly string[];
+		if (command.parts) {
+			let resume: { readonly value: JsonValue | null } | undefined;
+			let own: readonly string[] | undefined;
+			if (command.resume !== undefined) {
+				// Called once for every ending, when it is known; its result serves the repeat and the record (OC5).
+				const resumed = resumeFlags(program, read, lastPart);
+				if (resumed.ok) {
+					resume = { value: resumed.value };
+					own = resumed.own;
+				} else {
+					resume = { value: null };
+					diagnose(`diagnostic: ${resumed.why}, so the repeat uses the flags as given`);
+				}
+			}
+			facts = { partsTaken, lastPart, ...(resume === undefined ? {} : { resume }) };
+			repeatArgs = repeatArguments(read, invocation, own);
+		} else repeatArgs = repeatArguments(read, invocation);
+		const printed = printEnding(ending, { operation: command.operation, invocation, repeat: repeatArgs, json, program: program.name, word: command.word as Wording | undefined, flags, ...(facts === undefined ? {} : { parts: facts }) });
 		if (printed.diagnostic !== undefined) diagnose(printed.diagnostic);
-		io.stdout(printed.out);
+		if (out !== undefined) await giveEnding(out, printed.out);
+		else io.stdout(printed.out);
 		return EXIT_STATUS[ending.ending];
 	};
 	const interruptedBeforeRun = (): number => {
@@ -187,15 +410,15 @@ async function runInvoking(program: CompiledProgram, read: ReadCommand, io: Comm
 	const prepare = client.prepare;
 	if (typeof prepare === "function") {
 		const deadline = began + (flags[program.prepareTime as string] as number);
-		const controller = new AbortController();
+		const preparing = new AbortController();
 		const settled = await new Promise<{ readonly interrupted: true } | { readonly interrupted: false; readonly prepared: Prepared }>((resolve) => {
 			interruptWith(() => {
 				interruptWith(() => undefined);
 				interrupted = true;
-				controller.abort();
+				preparing.abort();
 				resolve({ interrupted: true });
 			});
-			const request = Object.freeze({ deadline, clock, signal: controller.signal, command: command.name, flags });
+			const request = Object.freeze({ deadline, clock, signal: preparing.signal, command: command.name, flags });
 			void outcomeOf(() => prepare.call(client, request)).then((outcome) => resolve({ interrupted: false, prepared: judgePrepared(outcome) }));
 		});
 		// Interrupted while preparing: nothing more is called, whatever prepare settles to afterwards.
@@ -204,20 +427,23 @@ async function runInvoking(program: CompiledProgram, read: ReadCommand, io: Comm
 		if (prepared.kind !== "ready") {
 			if (prepared.kind === "failed") diagnose(`diagnostic: ${prepared.diagnostic}`);
 			const codes = prepared.kind === "ending" ? prepared : { agpCode: null, proxyCode: null };
+			printing = false;
 			return report({ ending: "not-delivered", agpCode: codes.agpCode, proxyCode: codes.proxyCode, earlierAttemptsUncertain: repeat });
 		}
 	}
 
 	// run is called: the first interruption fires its abort signal, and none ends the wait for its ending.
-	const controller = new AbortController();
 	interruptWith(() => { if (!controller.signal.aborted) controller.abort(); });
 	const context: RunContext<object> = Object.freeze({
 		client: program.client, command: command.name, operation: command.operation, flags,
 		bound: flags[program.callBound as string] as number, invocation, repeat, signal: controller.signal,
+		...(command.parts ? { onPart } : {}),
 	});
-	const outcome = await outcomeOf(() => (command.run as (context: RunContext<object>) => unknown)(context));
-	// The ending is given: an interruption from here, while it is printed included, changes nothing.
-	interruptWith(() => undefined);
+	// The moment run is observed settled: printing of parts closes, and an interruption changes nothing more (OC4).
+	const outcome = await outcomeOf(() => (command.run as (context: RunContext<object>) => unknown)(context), () => {
+		printing = false;
+		interruptWith(() => undefined);
+	});
 	// What it rejected with, or what it settled to that is no ending, has its promises observed before it is described.
 	const failedWith = (error: unknown): { readonly ok: false; readonly why: string } => {
 		observePromises(error, DIAGNOSTIC_LIMIT);

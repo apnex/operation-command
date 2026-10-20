@@ -27,6 +27,21 @@ const withFlag = (flag, extra = {}) => declaration({ commands: [{ name: "go", op
 const refused = (decl, rule) => assert.throws(() => declareProgram(decl), (error) => error instanceof DeclarationError && error.rule === rule && error.message.startsWith(`${rule}: `));
 
 describe("OC1 - the declaration", () => {
+	test("D4-E8: a parts command, with wordPart and resume, is accepted; parts that is not true or false, parts on a local command, and a wordPart or resume that is not a function or is given by a command not declared parts: true are refused, naming the rule", () => {
+		const go = (extra) => declaration({ commands: [{ name: "go", operation: "go", changes: false, run, ...extra }] });
+		assert.ok(declareProgram(go({ parts: true, wordPart: () => "", resume: () => ({}) })));
+		assert.ok(declareProgram(go({ parts: false })));
+		assert.throws(() => declareProgram(go({ parts: "yes" })), /^DeclarationError: command-form: the command go's parts is true or false$/);
+		refused(go({ parts: 1 }), "command-form");
+		refused(declaration({ commands: [{ name: "go", operation: "go", changes: false, run }, { name: "here", local: true, parts: true, run: () => 0 }] }), "unknown-field");
+		for (const key of ["wordPart", "resume"]) {
+			assert.throws(() => declareProgram(go({ parts: true, [key]: "not a function" })), new RegExp(`^DeclarationError: command-form: the command go's ${key} is a function$`));
+			assert.throws(() => declareProgram(go({ [key]: () => "" })), new RegExp(`^DeclarationError: command-form: the command go gives ${key}, which only a command declared parts: true has$`));
+			refused(go({ parts: false, [key]: () => "" }), "command-form");
+			refused(declaration({ commands: [{ name: "go", operation: "go", changes: false, run }, { name: "here", local: true, [key]: () => "", run: () => 0 }] }), "unknown-field");
+		}
+	});
+
 	test("the fixture application's declaration, with every type, source, group, relation and a local command, is accepted", () => {
 		const program = declareProgram(fixtureDeclaration({}));
 		assert.equal(program.name, "fixture");

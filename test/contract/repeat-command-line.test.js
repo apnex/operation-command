@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { BASE_ENV, plainFacts, programDirectory, runFixture, runShellLine, shellWords } from "../support/run-command.js";
+import { ending as partsEnding, jsonOutput, partsProgram, runParts } from "../support/parts-program.js";
 
 const UNKNOWN = { ending: { ending: "unknown", reason: "bound-passed", agpCode: null, deliveryReport: "delivered" } };
 const NAME = "fix ture's";
@@ -155,5 +156,114 @@ describe("OC5 - repeating an unknown ending", { concurrency: 3 }, () => {
 	test("a command that changes nothing repeats as a fresh run", async () => {
 		const { array } = await roundTrip(["find", "--tag", "k:v", "--limit", "5"], { changes: false });
 		assert.deepEqual(array.slice(-5), ["--json", "--tag", "k:v", "--limit", "5"]);
+	});
+});
+
+describe("OC5 - the repeat of a parts command, from what resume gives (D4-E8)", () => {
+	const UNKNOWN_PART = partsEnding({ ending: "unknown", reason: "bound-passed", agpCode: null, deliveryReport: "delivered" });
+	const SETTINGS_WRITTEN = ["--host", "hub-a", "--timeout", "10s", "--connect-timeout", "5s"];
+
+	/** A parts program whose run records the flags it reads, passes on one part and ends unknown; resume as given. */
+	function program(resume, { calls } = {}) {
+		const reads = [];
+		const counted = calls ?? { n: 0 };
+		const wrapped = resume === undefined ? undefined : (lastPart, flags) => { counted.n++; return resume(lastPart, flags); };
+		const run = async ({ onPart, flags, command }) => {
+			reads.push({ command, flags });
+			onPart({ through: 7 });
+			return partsEnding({ ending: "unknown", reason: "bound-passed", agpCode: null, deliveryReport: "delivered" }, command);
+		};
+		return { program: partsProgram({ run, ...(wrapped ? { resume: wrapped } : {}) }), reads, calls: counted };
+	}
+
+	/** Runs args in both forms; gives the JSON record, the plain repeat line, and what each repeat, run through the parser, reads. */
+	async function repeated(made, args) {
+		const json = await runParts(made.program, [...args, "--json"]);
+		const plain = await runParts(made.program, args);
+		assert.equal(json.status, 4, json.io.err.join(""));
+		const record = jsonOutput(json.io.stdoutText).ending;
+		const line = plain.io.stdoutText.split("\n").find((l) => l.startsWith("repeat: ")).slice("repeat: ".length);
+		const words = await shellWords(line);
+		assert.equal(words[0], "pt");
+		const before = made.reads.length;
+		await runParts(made.program, record.repeat);
+		await runParts(made.program, words.slice(1));
+		return { record, plain, words, firstFlags: made.reads[0].flags, again: made.reads.slice(before).map((r) => r.flags), diagnostics: [...json.io.diagnostics, ...plain.io.diagnostics] };
+	}
+
+	test("D4-E8: resume replaces a flag's value and a repeating flag's values in place of the first given, adds a flag not given in declared order, turns a switch off and leaves a flag out; the exact repeat array and its quoted line, each run through the real parser", async () => {
+		const made = program(() => ({ since: "7", tag: ["x"], max: "3", quiet: false, for: null }));
+		const args = ["follow", "--tag", "a", "--since", "0", "--tag", "b", "--quiet", "--for", "5s"];
+		const { record, words, again, diagnostics } = await repeated(made, args);
+		assert.deepEqual(record.repeat, ["follow", ...SETTINGS_WRITTEN, "--json", "--tag", "x", "--since", "7", "--max", "3"]);
+		assert.deepEqual(words.slice(1), ["follow", ...SETTINGS_WRITTEN, "--tag", "x", "--since", "7", "--max", "3"]);
+		assert.deepEqual(record.resume, { since: "7", tag: ["x"], max: "3", quiet: false, for: null });
+		const expected = { host: "hub-a", token: "public", timeout: 10000, "connect-timeout": 5000, since: 7, tag: ["x"], max: 3, quiet: false };
+		for (const flags of again) assert.deepEqual({ ...flags }, expected);
+		assert.deepEqual(diagnostics, []);
+	});
+
+	test("D4-E8: a resume that turns a switch on, and one that names nothing, continue as it says", async () => {
+		const on = await repeated(program(() => ({ quiet: true })), ["follow", "--since", "2"]);
+		assert.deepEqual(on.record.repeat, ["follow", ...SETTINGS_WRITTEN, "--json", "--since", "2", "--quiet"]);
+		assert.ok(on.again.every((f) => f.quiet === true));
+		const none = await repeated(program(() => ({})), ["follow", "--since", "2", "--tag", "t"]);
+		assert.deepEqual(none.record.repeat, ["follow", ...SETTINGS_WRITTEN, "--json", "--since", "2", "--tag", "t"]);
+		assert.deepEqual(none.record.resume, {});
+	});
+
+	const FALLBACKS = {
+		throws: { args: ["follow", "--since", "0"], resume: () => { throw new Error("resume broke"); }, why: /resume threw .*resume broke/ },
+		"returns a promise": { args: ["follow", "--since", "0"], resume: () => Promise.resolve({ since: "1" }), why: /resume returned a promise/ },
+		"returns a rejecting promise": { args: ["follow", "--since", "0"], resume: () => Promise.reject(new Error("resume rejected")), why: /resume returned a promise/ },
+		"returns a list": { args: ["follow", "--since", "0"], resume: () => ["--since", "1"], why: /not an object of the command's own flags/ },
+		"returns an object with a getter": { args: ["follow", "--since", "0"], resume: () => ({ get since() { throw new Error("read"); } }), why: /not an object of the command's own flags/ },
+		"names a setting": { args: ["follow", "--since", "0"], resume: () => ({ host: "hub-b" }), why: /resume named "host", which is not one of the command follow's own flags/ },
+		"names an unknown flag": { args: ["follow", "--since", "0"], resume: () => ({ nope: "1" }), why: /resume named "nope"/ },
+		"names a flag written with --": { args: ["follow", "--since", "0"], resume: () => ({ "--since": "1" }), why: /resume named "--since"/ },
+		"gives a value its type refuses": { args: ["follow", "--since", "0"], resume: () => ({ since: "seven" }), why: /resume gave flags the command does not read: the value "seven" of --since/ },
+		"gives a text to a switch": { args: ["follow", "--since", "0"], resume: () => ({ quiet: "yes" }), why: /resume gave --quiet "yes", which is not true, false or null/ },
+		"gives a flag that may not repeat two values": { args: ["follow", "--since", "0"], resume: () => ({ since: ["1", "2"] }), why: /resume gave --since \["1", "2"\], which is not a text or null/ },
+		"leaves out a required flag": { args: ["follow", "--since", "0"], resume: () => ({ since: null }), why: /the flag --since is required/ },
+		"breaks an exclusion": { args: ["watch", "--a", "1", "--x", "1", "--z", "1"], resume: () => ({ b: "2" }), why: /the flags --a and --b exclude each other/ },
+		"breaks a requirement": { args: ["watch", "--x", "1", "--z", "1"], resume: () => ({ c: true }), why: /the flag --c requires --d/ },
+		"leaves an exactly-one group with two": { args: ["watch", "--x", "1", "--z", "1"], resume: () => ({ y: "2" }), why: /needs exactly one of --x, --y, and was given 2/ },
+		"leaves an at-least-one group with none": { args: ["watch", "--x", "1", "--z", "1"], resume: () => ({ z: null }), why: /needs at least one of --z, --w, and was given none/ },
+	};
+	for (const [name, spec] of Object.entries(FALLBACKS)) {
+		test(`D4-E8: a resume that ${name} gives the flags as given, resume null and one diagnostic line`, async () => {
+			const made = program(spec.resume);
+			const json = await runParts(made.program, [...spec.args, "--json"]);
+			assert.equal(json.status, 4);
+			const record = jsonOutput(json.io.stdoutText).ending;
+			assert.equal(record.resume, null);
+			assert.deepEqual(record.repeat, [spec.args[0], ...SETTINGS_WRITTEN, "--json", ...spec.args.slice(1)]);
+			assert.equal(json.io.diagnostics.length, 1, json.io.err.join(""));
+			assert.match(json.io.diagnostics[0], spec.why);
+			assert.match(json.io.diagnostics[0], /, so the repeat uses the flags as given$/);
+		});
+	}
+
+	test("D4-E8: resume is called exactly once for an ending, its result in both the repeat and the ending's resume", async () => {
+		const calls = { n: 0 };
+		const made = program((lastPart) => ({ since: String(lastPart.through) }), { calls });
+		const { status, io } = await runParts(made.program, ["follow", "--since", "0", "--json"]);
+		assert.equal(status, 4);
+		assert.equal(calls.n, 1);
+		const record = jsonOutput(io.stdoutText).ending;
+		assert.deepEqual(record.resume, { since: "7" });
+		assert.deepEqual(record.repeat.slice(-2), ["--since", "7"]);
+	});
+
+	test("D4-E8: resume is given the last part and the frozen flags as read - an integer, a duration, a repeating flag, a flag not given absent and a switch off - and, for an ending whose client could not get ready, null", async () => {
+		const given = [];
+		const resume = (lastPart, flags) => { given.push({ lastPart, flags: { ...flags }, frozen: Object.isFrozen(flags) }); return {}; };
+		const expected = { host: "hub-a", token: "public", timeout: 10000, "connect-timeout": 5000, since: 4, tag: ["a", "b"], for: 5000, quiet: false };
+		const ran = partsProgram({ resume, run: async ({ onPart }) => { onPart({ through: 9 }); return UNKNOWN_PART; } });
+		await runParts(ran, ["follow", "--since", "4", "--tag", "a", "--tag", "b", "--for", "5s"]);
+		const unready = partsProgram({ resume, run: async () => UNKNOWN_PART, prepare: () => ({ ending: "not-delivered", agpCode: "TIMEOUT", proxyCode: null }) });
+		const { status } = await runParts(unready, ["follow", "--since", "4", "--tag", "a", "--tag", "b", "--for", "5s"]);
+		assert.equal(status, 3);
+		assert.deepEqual(given, [{ lastPart: { through: 9 }, flags: expected, frozen: true }, { lastPart: null, flags: expected, frozen: true }]);
 	});
 });

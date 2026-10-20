@@ -50,15 +50,24 @@ export function readEnding(value: unknown): Read {
 	}
 }
 
-/** What a record is printed with: the command's operation and identity, and the repeat of an unknown ending. */
+/** What a parts command adds to its ending (OC4): its count of parts printed, the last of them, and what `resume` gave. */
+export interface PartsFacts {
+	readonly partsTaken: number;
+	readonly lastPart: JsonValue | null;
+	/** Present when the declaration gives `resume`: its flags, or `null` where it failed (OC5). */
+	readonly resume?: { readonly value: JsonValue | null };
+}
+
+/** What a record is printed with: the command's operation and identity, the repeat of an unknown ending, and a parts command's facts. */
 export interface RecordContext {
 	readonly operation: string;
 	readonly invocation: string;
 	readonly repeat: readonly string[];
+	readonly parts?: PartsFacts;
 }
 
-/** The record of an ending, its fields in the order OC4 lists them. */
-export function endingRecord(ending: Ending, context: RecordContext): { readonly [field: string]: JsonValue } {
+/** The fields of an ending, in the order OC4 lists them, before any a parts command adds. */
+function endingFields(ending: Ending, context: RecordContext): { [field: string]: JsonValue } {
 	const head = { ending: ending.ending, operation: context.operation, invocation: context.invocation };
 	switch (ending.ending) {
 		case "answered": return { ...head, answer: ending.answer };
@@ -68,8 +77,18 @@ export function endingRecord(ending: Ending, context: RecordContext): { readonly
 	}
 }
 
+/** The record of an ending, its fields in the order OC4 lists them; a parts command's `partsTaken`, `lastPart` and `resume` last. */
+export function endingRecord(ending: Ending, context: RecordContext): { readonly [field: string]: JsonValue } {
+	const record = endingFields(ending, context);
+	if (context.parts === undefined) return record;
+	record.partsTaken = context.parts.partsTaken;
+	record.lastPart = context.parts.lastPart;
+	if (context.parts.resume !== undefined) record.resume = context.parts.resume.value;
+	return record;
+}
+
 /** A value on one line: text as it is, unless it holds a control character, and anything else as JSON. */
-function plainValue(value: JsonValue): string {
+export function plainValue(value: JsonValue): string {
 	if (typeof value === "string" && !/[\u0000-\u001f\u007f]/.test(value)) return value;
 	return writeJson(value);
 }
@@ -110,15 +129,15 @@ export function printEnding(ending: Ending, context: RecordContext & { readonly 
  * has its native promises observed, and is described from its own data descriptors only. It is given the
  * answer as `readCallEnding` read it, deeply frozen, so it changes nothing printed.
  */
-function wordAnswer(word: Wording, answer: JsonValue, flags: Flags): { readonly ok: true; readonly text: string } | { readonly ok: false; readonly why: string } {
+export function wordAnswer(word: Wording, answer: JsonValue, flags: Flags, name = "word"): { readonly ok: true; readonly text: string } | { readonly ok: false; readonly why: string } {
 	let returned: unknown;
 	try {
 		returned = word(answer, flags);
 	} catch (error) {
 		observePromises(error, DIAGNOSTIC_LIMIT);
-		return { ok: false, why: `word threw ${describe(error, true)}` };
+		return { ok: false, why: `${name} threw ${describe(error, true)}` };
 	}
 	if (typeof returned === "string") return { ok: true, text: returned };
 	observePromises(returned, DIAGNOSTIC_LIMIT);
-	return { ok: false, why: `word returned ${describe(returned)}, not text` };
+	return { ok: false, why: `${name} returned ${describe(returned)}, not text` };
 }

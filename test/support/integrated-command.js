@@ -9,7 +9,9 @@
 // hold standard output until the process received the signals it names (held-write.js), and name a payload
 // that its operations answer, or give as their refusal's details. The ending each run returns is recorded;
 // a scenario's `envelope` returns it inside a frozen object with a custom prototype, or a frozen plain object
-// whose `ending` is not enumerable, as the caller interface's types allow (OC4).
+// whose `ending` is not enumerable, as the caller interface's types allow (OC4). Each service also serves
+// `stream`, answering in parts (zorg's EM11): `count` parts, then, with `untilCancel`, waiting for its
+// invocation's signal, which the caller's cancel fires, before answering; its parts command is `watch`.
 import { createNode } from "@agp/node";
 import { createLoopbackFabric } from "@agp/transport-loopback";
 import { createCaller, createOperationHost } from "@apnex/operation-call";
@@ -63,13 +65,23 @@ async function openTopology(identity) {
 					return { outcome: "answered", answer: scenario.payload === undefined ? { node: h.nodeId, service, operation, input } : scenario.payload };
 				});
 			}
+			await opened.host.declare({ name: "stream", input: SHAPE, answers: "parts" }, async (input, context) => {
+				record("received", { node: h.nodeId, service, operation: "stream", input, invocation: context.invocation, attempt: context.attempt, principal: context.evidence.principal });
+				for (let n = 1; n <= input.count; n++) await context.part({ n, service });
+				if (input.untilCancel) {
+					record("host-waiting", {});
+					await new Promise((resolve) => { if (context.signal.aborted) resolve(); else context.signal.addEventListener("abort", () => resolve(), { once: true }); });
+					record("host-signal", {});
+				}
+				return { outcome: "answered", answer: { parts: input.count, stopped: context.signal.aborted } };
+			});
 		}
 	}
 	await callerNode.start();
 	const caller = await createCaller({ node: callerNode });
 	const acked = (node, endpoint, remote) => node.operations.routeExports().items.some((r) => r.endpoint === endpoint && r.remoteNodeId === remote && r.state === "acked");
 	const routed = (hostId, endpoint) => callerNode.operations.routes().candidates.some((r) => r.endpoint === endpoint && r.originNodeId === hostId);
-	const ready = () => hosts.every((h) => acked(callerNode, REPLY, h.nodeId) && SERVICES.every((s) => OPERATIONS.every((o) => routed(h.nodeId, `${s}/${o}`) && acked(h.node, `${s}/${o}`, identity))));
+	const ready = () => hosts.every((h) => acked(callerNode, REPLY, h.nodeId) && SERVICES.every((s) => [...OPERATIONS, "stream"].every((o) => routed(h.nodeId, `${s}/${o}`) && acked(h.node, `${s}/${o}`, identity))));
 	return { caller, callerNode, ready };
 }
 
@@ -160,6 +172,15 @@ const declaration = {
 			{ flag: "--link", type: { kind: "url", schemes: ["https"] } },
 		], groups: [{ atLeastOne: ["--tag", "--clear"] }],
 			run: runWith((f) => ({ name: f.name, tags: f.tag ?? [], clear: f.clear, priority: f.priority ?? null, force: f.force, link: f.link ?? null, ...common(f) })) },
+		// A parts command (zorg's D4-E8): each part the call layer takes is passed on as its answer alone.
+		{ name: "watch", operation: "stream", changes: false, parts: true, flags: [{ flag: "--count", required: true, type: { kind: "integer", min: 0, max: 100 } }, { flag: "--until-cancel", type: { kind: "switch" } }],
+			wordPart: (answer) => `part ${answer.n} from ${answer.service}`,
+			run: async ({ flags, bound, invocation, repeat, signal, operation, onPart }) => {
+				record("run", { invocation, repeat, bound });
+				const ending = await topology.caller.invoke({ host: flags.host, service: flags.service, operation, input: { count: flags.count, untilCancel: flags["until-cancel"] }, bound, invocation, repeat, signal, onPart: (part) => onPart(part.answer) });
+				record("call-ending", { ending });
+				return ending;
+			} },
 	],
 	client,
 	callBound: "--timeout",

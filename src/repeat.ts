@@ -11,8 +11,11 @@
 import { INVOCATION_FLAG, JSON_FLAG } from "./declaration.js";
 import type { ReadCommand } from "./reading.js";
 
-/** The `repeat` array of an unknown ending: the arguments that follow the program's name. */
-export function repeatArguments(read: ReadCommand, invocation: string): readonly string[] {
+/**
+ * The `repeat` array of an unknown ending: the arguments that follow the program's name. `own`, when given, is
+ * a parts command's own flags as `resume` made them (OC5), in place of the flags as given.
+ */
+export function repeatArguments(read: ReadCommand, invocation: string, own?: readonly string[]): readonly string[] {
 	const args: string[] = [read.command.name];
 	for (const taken of read.settings) {
 		// A secret is supplied again by whoever runs the repeat; a switch on is its flag alone.
@@ -21,12 +24,19 @@ export function repeatArguments(read: ReadCommand, invocation: string): readonly
 		else for (const text of taken.texts) args.push(taken.flag.flag, text);
 	}
 	if (read.json) args.push(JSON_FLAG);
+	args.push(...(own ?? givenArguments(read)));
+	if (read.command.changes) args.push(INVOCATION_FLAG, invocation);
+	return Object.freeze(args);
+}
+
+/** The command's own flags as given, in the order given, as arguments. */
+export function givenArguments(read: ReadCommand): readonly string[] {
+	const args: string[] = [];
 	for (const given of read.given) {
 		args.push(given.flag.flag);
 		if (given.text !== undefined) args.push(given.text);
 	}
-	if (read.command.changes) args.push(INVOCATION_FLAG, invocation);
-	return Object.freeze(args);
+	return args;
 }
 
 /** One shell word in single quotes, each single quote within it written `'\''`. */

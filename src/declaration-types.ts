@@ -81,9 +81,20 @@ export interface RunContext<Client> {
 	readonly invocation: string;
 	/** Whether the invocation is marked a repeat. */
 	readonly repeat: boolean;
-	/** Fired when the command is interrupted after calling `run` (OC4). */
+	/** Fired when the command is interrupted after calling `run`, or closes its printing of parts (OC4). */
 	readonly signal: AbortSignal;
+	/**
+	 * Given to a parts command's `run` alone (OC3): its client calls it with each part's answer, in order, for
+	 * the command to print (OC4). It returns nothing and never throws.
+	 */
+	readonly onPart?: (answer: JsonValue) => void;
 }
+
+/**
+ * What a parts command's `resume` gives (OC5): each of the command's own flags it changes, named without its
+ * leading `--` - a text, the texts of a flag that repeats, a switch on or off, or `null` to leave it out.
+ */
+export type ResumeFlags = { readonly [flag: string]: string | readonly string[] | boolean | null };
 
 /** What a local command's code is given. */
 export interface LocalContext<Client> {
@@ -142,6 +153,12 @@ export interface InvokingCommandDeclaration<Client> {
 	run(context: RunContext<Client>): CallEnding | Promise<CallEnding>;
 	/** Words an answer for the plain form, as one or more lines; by default `answer: ` and its JSON. */
 	word?(answer: JsonValue, flags: Flags): string;
+	/** Whether its answer may come in parts, which it prints as they arrive (OC1, OC4). */
+	readonly parts?: boolean;
+	/** A parts command's wording of a part for the plain form; by default `part: ` and its JSON (OC4). */
+	wordPart?(answer: JsonValue, flags: Flags): string;
+	/** A parts command's flags that continue where it stopped, given the last part printed or `null` (OC5). */
+	resume?(lastPart: JsonValue | null, flags: Flags): ResumeFlags;
 	readonly description?: string;
 }
 
