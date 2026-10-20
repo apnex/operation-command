@@ -12,11 +12,11 @@ Its contract tests run a fixture application's commands as child processes, with
 
 It belongs to a component set first composed by zorg (`apnex/zorg`), and is private until its first working code.
 
-It depends on operation-call through a `file:` link to a checkout beside it, and its integrated tests link AGP's `@agp/core`, `@agp/node` and `@agp/transport-loopback` from an AGP checkout at `f16266a` the same way; each must be installed and built first, since neither commits its `dist/`.
+It depends on operation-call through a `file:` link to a checkout beside it, and its integrated tests link AGP's `@agp/core`, `@agp/node` and `@agp/transport-loopback` from an AGP checkout at `baa2c1a` the same way; each must be installed and built first, since neither commits its `dist/`.
 
 To run the tests from clean checkouts:
 ```sh
-(cd ../agp && git checkout f16266a && npm ci --offline && npm run build)
+(cd ../agp && git checkout baa2c1a && npm ci --offline && npm run build)
 (cd ../shape-check && npm ci --offline && npm run build)
 (cd ../operation-call && npm ci --offline && npm run build)
 npm ci --offline
