@@ -1,6 +1,6 @@
 # operation-command - Vision
 
-**Status: ratified by the director, 2026-10-11 (zorg's `docs/DECISIONS.md`, `D44`), amended 2026-10-14 (`D55`); enduring.**\
+**Status: ratified by the director, 2026-10-11 (zorg's `docs/DECISIONS.md`, `D44`), amended 2026-10-14 (`D55`) and 2026-10-18 (`D64`); enduring.**\
 This document states why operation-command exists and what it will never be.\
 It carries no current state, no roadmap, and no schedule.
 
@@ -18,7 +18,7 @@ Four terms in that sentence carry weight, so this document defines them rather t
 
 **Named operations** means operations a caller reaches by name and that end in one of four ways: answered, refused with a reason, not delivered, or unknown.
 
-**By declaring them** means each command, its flags, the environment variables that may stand in for them, their defaults and their valid values are written as data; the application writes no parsing of its own, and its code is only what builds each operation's input, runs it through the application's own client and words its answer, and the code of any command that invokes nothing; a reference of every command, its flags and their defaults is generated from that data, in the words the application gave it, never written beside it.
+**By declaring them** means each command, its flags, the environment variables that may stand in for them, their defaults and their valid values are written as data; the application writes no parsing of its own, and its code is only what builds each operation's input, runs it through the application's own client and words its answer and any parts the answer comes in, and the code of any command that invokes nothing; a reference of every command, its flags and their defaults is generated from that data, in the words the application gave it, never written beside it.
 
 **Exactly how the invocation ended, or that nothing was invoked** means each of the four endings has its own exit status and its own output, and so does a command refused before anything was invoked - an error in the command, or an interruption before the invocation began, which share one status of their own - so a script or an agent can act on it without reading prose; a command interrupted after its invocation began reports whatever ending the call layer gives, however often it is interrupted.
 
@@ -41,22 +41,22 @@ operation-command writes that layer once, so a command tells the truth about its
 ## What it is
 
 A library that a command-line program embeds.\
-It reads a declaration of commands, takes the program's arguments and environment, invokes the named operation through a caller of the call layer, handing it the bound the command's settings give for the call layer to keep, prints the ending, and exits with that ending's status.
+It reads a declaration of commands, takes the program's arguments and environment, invokes the named operation through a caller of the call layer, handing it the bound the command's settings give for the call layer to keep, prints the parts of an answer that comes in parts as they arrive and then the ending, which says how many parts it printed and the last of them, and exits with that ending's status.
 
-The application supplies its declaration, the client its commands run through, how each command runs its invocation through that client, and how its answers are worded; operation-command supplies everything between.
+The application supplies its declaration, the client its commands run through, how each command runs its invocation through that client, and how its answers and their parts are worded; operation-command supplies everything between.
 
 ---
 
 ## What it is not
 
 **Not the call layer.**\
-It does not pair answers with requests, keep a call's bound, or decide how a call ended; it reports the ending the call layer gives it, unchanged, and adds only what is its own: the exit status, the refusal of a command that is not valid, the report of a command interrupted before it invoked anything, the ending not delivered of a command whose client could not get ready - a fact of its own, since no call was ever made - when the client does not say how, the ending unknown when the application's own `run` rejects, throws, or returns what is not, read as plain data (`D54`), an ending the caller interface gives, and the command that repeats an unknown ending.
+It does not pair answers with requests, keep a call's bound, or decide how a call ended; it reports the ending the call layer gives it, unchanged, and adds only what is its own: the exit status, how many parts of an answer it printed and the last of them, the refusal of a command that is not valid, the report of a command interrupted before it invoked anything, the ending not delivered of a command whose client could not get ready - a fact of its own, since no call was ever made - when the client does not say how, the ending unknown when the application's own `run` rejects, throws, or returns what is not, read as plain data (`D54`), an ending the caller interface gives, and the command that repeats an unknown ending.
 
 **Not a retrier.**\
 It never repeats an invocation on its own; for an invocation whose ending is unknown, it prints how to repeat it, and the person or agent decides.
 
 **Not a shell or a terminal interface.**\
-It runs one command and exits; it keeps no session, draws no screen, and offers no prompts.
+It runs one command and exits, an answer in parts included, which it prints as the parts arrive and then ends; it keeps no session, draws no screen, and offers no prompts.
 
 **Not the application's voice.**\
 What a command is called, what it says about itself, and how an answer reads are the application's, supplied with the declaration; the statuses and records that say how a command ended are operation-command's, the same for every application.
