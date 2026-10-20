@@ -2,9 +2,9 @@
 
 Run one declared invocation from a command line, reporting its ending through the exit status.
 
-**Status: built, and certified at zorg's Delta 1, stage 4c, at `9612b36`, and with amendment 8's URL-pattern and parser round-trip change at `c97c615`.**\
-Its vision is ratified (zorg's `D44`), and its contract's design is certified at zorg's Delta 1, amendments 2 and 8 (`D56`).\
-Its contract tests run a fixture application's commands as child processes, with real signals, for `declared-command-dispatch`, `ending-exit-status`, `repeat-command-line` and `command-call-bound`, and run them through operation-call over AGP's production in-process carrier; `command-reference` is left out of Delta 1 (zorg's `D37`).
+**Status: built, and certified at zorg's Delta 1, stage 4c, at `9612b36`, with amendment 8's URL-pattern and parser round-trip change at `c97c615`, and at zorg's Delta 4, stage 8 (`9ee0582`), which prints an answer's parts before its ending.**\
+Its vision is ratified (zorg's `D44`) and amended (`D55`, `D64`), and its contract's design is certified at zorg's Delta 1, amendments 2 and 8 (`D56`), and Delta 4, stage 8 and amendment 8.\
+Its contract tests run a fixture application's commands as child processes, with real signals, for `declared-command-dispatch`, `ending-exit-status`, `repeat-command-line` and `command-call-bound`, and run them through operation-call over AGP's production in-process carrier; a parts command's printing, its bound on unwritten output, its failed writes and its `resume` are tested in this process and through the process adapter; `command-reference` is built in zorg's Delta 3 (`D57`).
 
 - `VISION.md` - why it exists, and what it will never be.
 - `CONTRACT.md` - what a consumer can depend on, one capability per row.
