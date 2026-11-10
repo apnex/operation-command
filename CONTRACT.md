@@ -1,8 +1,8 @@
 ---
-id: unminted
+id: C9
 category: component
 title: operation-command - named operations run from a command line, each ending reported through the exit status
-status: draft
+status: active
 hydrate-when: A program offers named operations as commands, and you are about to write flag parsing, exit statuses or the difference between failed and unknown by hand
 sovereignty: internal
 supersedes: []
@@ -12,8 +12,8 @@ related: [C0, A3]
 # operation-command
 
 The contract of record for operation-command: what a consumer can depend on, admitted to zorg's component set by the director's rulings `D35` and `D37` in zorg's `docs/DECISIONS.md`; its vision is ratified (zorg's `D44`), and this contract is a draft until its capabilities are built and verified.\
-It also carries the fields of a mission-kit registry entry, and that entry is generated from this file when the component is filed, never written as a second copy.\
-The registry id is unminted on purpose; one is minted only when the entry is admitted to the registry.
+It also carries the fields of a mission-kit registry entry, and that entry is generated from this file, never written as a second copy.\
+Admitted to mission-kit's component registry as `C9`, its first release `0.1.0` (`docs/DECISIONS.md` `D3`); its frontmatter is the entry's.
 
 ---
 
@@ -161,9 +161,9 @@ Tested by: `E19`, in that file; and `E15`, in zorg's `test/e2e/command-configura
 
 ## Reference
 
-This repository, `apnex/operation-command`, private until its first working code is certified.\
+This repository, `apnex/operation-command`, and its package `@apnex/operation-command`, released only by its own CI as a tarball attached to a GitHub release, drafted, verified and then published (`.github/workflows/release.yml`).\
 The package `@apnex/operation-command` exports `declareProgram`, which checks a declaration, runs one command of it and formats its reference, `formatReference`, `DeclarationError`, `EXIT_STATUS`, `INTERRUPTED_LINE`, `RUN_FAILED` and `systemCommandClock`; `@apnex/operation-command/process` exports `runProcess`, which runs a declared program as a Node process, as `export-map.json` records.\
-It depends on `@apnex/operation-call` and `@apnex/shape-check` through `file:` links, and imports no module particular to one runtime outside its process adapter.
+It depends on `@apnex/operation-call` and `@apnex/shape-check` through their release files, and imports no module particular to one runtime outside its process adapter.
 
 ---
 

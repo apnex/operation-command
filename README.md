@@ -10,7 +10,7 @@ Its contract tests run a fixture application's commands as child processes, with
 - `CONTRACT.md` - what a consumer can depend on, one capability per row.
 - `docs/DECISIONS.md` - the rulings about this component.
 
-It belongs to a component set first composed by zorg (`apnex/zorg`), and is private until its first working code.
+It belongs to a component set first composed by zorg (`apnex/zorg`), and is released only by its own CI, as a tarball attached to a GitHub release with its SHA-512 beside it, which a consumer names in its `package.json`: `https://github.com/apnex/operation-command/releases/download/v0.1.0/apnex-operation-command-0.1.0.tgz` for `0.1.0`.
 
 It depends on operation-call through a `file:` link to a checkout beside it, and its integrated tests link AGP's `@agp/core`, `@agp/node` and `@agp/transport-loopback` from an AGP checkout at `baa2c1a` the same way; each must be installed and built first, since neither commits its `dist/`.
 
