@@ -48,6 +48,7 @@ The five fixes every consumer of the components zorg maintains needs, made by dr
 **Choices made at build.**
 - `private: true` stays: it stops publishing to the npm registry, and `npm pack` packs the package with it.
 - The style rules `npm run docs:check` holds are vendored in `tools/`, so CI fetches no mission-kit checkout.
+- CI runs Node 24 at `24.12.0`, the version zorg certified, not the latest 24: the first run, on `24.22.2`, failed one test, `a URL type with a pattern` in `test/contract/declared-command-dispatch.test.js`, since from Node 24.22 the runtime's URL parser (ada `4.0.0`) takes `ws://xn--abc.example:1/` and `ws://xn--a-ecp.example:1/`, which the test expects it to refuse, while `24.12.0` (ada `3.3.0`) and Node 22 refuse both; a setting is read by the runtime's own parser, so which texts are URLs is the runtime's, and the test's expectation is zorg's to revisit, as it guarded the readback rule beside it on Node 24.
 - In CI this repository is checked out into a folder of its own and `apnex/agp` beside it, both inside the workspace, since `actions/checkout` places a repository only there; AGP is checked out with its history and then at `b179b4f` by that short id, so no full commit id is written but the actions' own pins, and built with `npm --prefix ../agp ci && npm --prefix ../agp run build` before `npm ci`, so the `file:` links to `../agp/packages` resolve (zorg's answer 3).
 - Its contract claims no browser runtime, so the consumer test imports the package in Node alone, loading nothing in Chrome.
 
