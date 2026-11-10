@@ -48,8 +48,11 @@ async function openTopology(identity) {
 		targets: new Map(targets.map((t) => [t, { fabricId, address: t }])),
 	});
 	const capacity = { maxSessions: 4, maxPendingHandshakes: 4 };
-	const hosts = ["host-a", "host-b"].map((nodeId) => ({ nodeId, node: createNode({ nodeId, listen: { transportRef: "listen" }, capacity, timers: { holdTimeMs: 0 }, disposition: { debounceMs: 0 } }, { transport: port(nodeId, true, []) }) }));
-	const callerNode = createNode({ nodeId: identity, capacity, timers: { holdTimeMs: 0 }, disposition: { debounceMs: 0 }, peers: hosts.map((h) => ({ adjacencyId: h.nodeId, expectedNodeId: h.nodeId, transportRef: h.nodeId, reconnect: { initialDelayMs: 10, maximumDelayMs: 10 } })) }, { transport: port(identity, false, hosts.map((h) => h.nodeId)) });
+	const identityAdmission = {
+		evaluate: async () => ({ decision: "allow", authorizationAssociation: { mode: "unauthenticated" } }),
+	};
+	const hosts = ["host-a", "host-b"].map((nodeId) => ({ nodeId, node: createNode({ nodeId, listen: { transportRef: "listen" }, capacity, timers: { holdTimeMs: 0 }, disposition: { debounceMs: 0 } }, { transport: port(nodeId, true, []), identityAdmission }) }));
+	const callerNode = createNode({ nodeId: identity, capacity, timers: { holdTimeMs: 0 }, disposition: { debounceMs: 0 }, peers: hosts.map((h) => ({ adjacencyId: h.nodeId, expectedNodeId: h.nodeId, transportRef: h.nodeId, reconnect: { initialDelayMs: 10, maximumDelayMs: 10 } })) }, { transport: port(identity, false, hosts.map((h) => h.nodeId)), identityAdmission });
 	for (const h of hosts) {
 		await h.node.start();
 		for (const service of SERVICES) {

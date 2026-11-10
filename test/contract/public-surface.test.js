@@ -101,10 +101,15 @@ test("only the file of default ports reads a clock or randomness; everything els
 	}
 });
 
-test("the package depends on operation-call and shape-check alone at run time, through file: links to checkouts beside it, and on AGP only to test", () => {
-	assert.deepEqual(pkg.dependencies, { "@apnex/operation-call": "file:../operation-call", "@apnex/shape-check": "file:../shape-check" });
+const validDepSpec = (name, spec) => spec === `file:../${name}` || new RegExp(`^https://github\\.com/apnex/${name}/releases/download/v0\\.\\d+\\.\\d+/apnex-${name}-0\\.\\d+\\.\\d+\\.tgz$`).test(spec);
+
+test("the package depends on operation-call and shape-check alone at run time, through file: links or pinned GitHub release URLs, and on AGP only to test", () => {
+	assert.deepEqual(Object.keys(pkg.dependencies ?? {}).sort(), ["@apnex/operation-call", "@apnex/shape-check"]);
+	assert.ok(validDepSpec("operation-call", pkg.dependencies["@apnex/operation-call"]));
+	assert.ok(validDepSpec("shape-check", pkg.dependencies["@apnex/shape-check"]));
 	for (const [name, spec] of Object.entries(pkg.devDependencies)) {
-		if (name.startsWith("@agp/") || name.startsWith("@apnex/")) assert.match(spec, /^file:\.\.\//, `${name} is linked from a checkout beside this one`);
+		if (name.startsWith("@agp/")) assert.match(spec, /^file:\.\.\//, `${name} is linked from a checkout beside this one`);
+		else if (name.startsWith("@apnex/")) assert.ok(validDepSpec(name.slice(7), spec), `${name} is linked from a checkout or pinned release`);
 	}
 	for (const file of tsSources()) {
 		for (const { typeOnly, specifier } of imports(fs.readFileSync(file, "utf8"))) {
